@@ -29,10 +29,7 @@ namespace Housefly.Construction
             pManager.AddNumberParameter("Offset Length", "L", "Half-size of pillar solid from center", GH_ParamAccess.item, 0.5);
             pManager.AddNumberParameter("Rib Width", "W_rib", "Rib width", GH_ParamAccess.item, 0.2);
             pManager.AddNumberParameter("Void Length", "L_void", "Void (square) length", GH_ParamAccess.item, 1.0);
-            pManager.AddNumberParameter("Border Widths", "Borders", "Widths for solid borders [left, right, bottom, top]", GH_ParamAccess.list, 0.5);
-            pManager.AddBooleanParameter("CalculateBrep", "B", "Wether calculate the whole brep or not", GH_ParamAccess.item, false);
-            pManager.AddNumberParameter("Void Height", "H_void", "Height of the void space (beneath top slab)", GH_ParamAccess.item, 0.2);
-            pManager.AddNumberParameter("Top Slab Height", "H_top", "Thickness of the top solid layer", GH_ParamAccess.item, 0.1);
+            pManager.AddNumberParameter("Border Widths", "Borders", "Widths for solid borders [left, right, bottom, top]", GH_ParamAccess.list);
         }
 
         /// <summary>
@@ -43,8 +40,7 @@ namespace Housefly.Construction
             pManager.AddRectangleParameter("Solids", "S", "Pillar solids (expanded to grid boundaries)", GH_ParamAccess.list);
             pManager.AddRectangleParameter("Borders", "B", "Solid border rectangles", GH_ParamAccess.list);
             pManager.AddRectangleParameter("Ribs", "R", "Rib grid rectangles", GH_ParamAccess.list);
-            pManager.AddRectangleParameter("Voids", "V", "Void grid rectangles", GH_ParamAccess.list);
-            pManager.AddBrepParameter("Slab Brep", "Slab", "Concrete slab Brep (final geometry)", GH_ParamAccess.item);
+            pManager.AddRectangleParameter("Voids", "V", "Void grid rectangles (filtered: no overlaps under solids)", GH_ParamAccess.list);
         }
 
         /// <summary>
@@ -55,14 +51,10 @@ namespace Housefly.Construction
         {
             Rectangle3d rect = Rectangle3d.Unset;
             var planes = new List<Plane>();
-            double offset = 0, 
-                ribWidth = 0,
-                voidLength = 0,
-                voidHeight = 0,
-                topSlabHeight = 0;
+            double offset = 0;
+            double ribWidth = 0;
+            double voidLength = 0;
             var borderWidths = new List<double>();
-            bool calculateBrep = false;
-
 
             if (!DA.GetData(0, ref rect)) return;
             if (!DA.GetDataList(1, planes)) return;
@@ -70,9 +62,6 @@ namespace Housefly.Construction
             if (!DA.GetData(3, ref ribWidth)) return;
             if (!DA.GetData(4, ref voidLength)) return;
             if (!DA.GetDataList(5, borderWidths)) return;
-            if (!DA.GetData(6, ref calculateBrep)) return;
-            if (!DA.GetData(7, ref voidHeight)) return;
-            if (!DA.GetData(8, ref topSlabHeight)) return;
             if (!rect.IsValid) return;
 
             // Normalize border widths
@@ -91,13 +80,27 @@ namespace Housefly.Construction
             double yMin = Math.Min(p0.Y, p2.Y);
             double yMax = Math.Max(p0.Y, p2.Y);
 
-            // Define inner region after border offsets
+            // Step 1️⃣ Base inner region from nominal borders
             double innerXMin = xMin + left;
             double innerXMax = xMax - right;
             double innerYMin = yMin + bottom;
             double innerYMax = yMax - top;
 
-            // 1) Border rectangles
+            // Step 2️⃣ Build a temporary full grid to find snapping lines
+            var tempX = BuildAlternatingIntervals(xMin, xMax, ribWidth, voidLength);
+            var tempY = BuildAlternatingIntervals(yMin, yMax, ribWidth, voidLength);
+
+            // Snap the inner limits to the nearest grid line that keeps borders fully enclosing ribs/voids
+            innerXMin = FindNextGridBoundary(tempX, innerXMin, true);   // snap inward
+            innerXMax = FindNextGridBoundary(tempX, innerXMax, false);  // snap inward
+            innerYMin = FindNextGridBoundary(tempY, innerYMin, true);
+            innerYMax = FindNextGridBoundary(tempY, innerYMax, false);
+
+            // 2️⃣ Build grid inside snapped borders
+            var xIntervals = BuildAlternatingIntervals(innerXMin, innerXMax, ribWidth, voidLength);
+            var yIntervals = BuildAlternatingIntervals(innerYMin, innerYMax, ribWidth, voidLength);
+
+            // Borders (expanded to snapped limits)
             var bordersOut = new List<Rectangle3d>
         {
             new Rectangle3d(basePlane, new Interval(xMin, innerXMin), new Interval(yMin, yMax)), // Left
@@ -106,10 +109,7 @@ namespace Housefly.Construction
             new Rectangle3d(basePlane, new Interval(innerXMin, innerXMax), new Interval(innerYMax, yMax))  // Top
         };
 
-            // 2) Grid (ribs + voids)
-            var xIntervals = BuildAlternatingIntervals(innerXMin, innerXMax, ribWidth, voidLength);
-            var yIntervals = BuildAlternatingIntervals(innerYMin, innerYMax, ribWidth, voidLength);
-
+            // 3️⃣ Build ribs + voids
             var ribsOut = new List<Rectangle3d>();
             var voidsOut = new List<Rectangle3d>();
 
@@ -122,32 +122,27 @@ namespace Housefly.Construction
                     bool isVoid = (!xi.IsRib) && (!yi.IsRib);
 
                     var r3 = new Rectangle3d(basePlane, new Interval(xi.Start, xi.End), new Interval(yi.Start, yi.End));
-
                     if (isVoid) voidsOut.Add(r3);
                     else ribsOut.Add(r3);
                 }
             }
 
-            // 3) Solids (pillars)
+            // 4️⃣ Pillar solids (same as before)
             var solidsOut = new List<Rectangle3d>();
-
             foreach (var pl in planes)
             {
                 basePlane.RemapToPlaneSpace(pl.Origin, out Point3d pt);
                 double cx = pt.X;
                 double cy = pt.Y;
 
-                // Pillar extents in local coordinates
                 double r0 = cx - offset;
                 double r1 = cx + offset;
                 double s0 = cy - offset;
                 double s1 = cy + offset;
 
-                // Skip if outside slab rectangle
                 if (r1 < xMin || r0 > xMax || s1 < yMin || s0 > yMax)
                     continue;
 
-                // Expand to match grid boundaries
                 double newX0 = r0, newX1 = r1, newY0 = s0, newY1 = s1;
 
                 foreach (var xi in xIntervals)
@@ -158,7 +153,6 @@ namespace Housefly.Construction
                     if (RangesOverlap(s0, s1, yi.Start, yi.End))
                     { newY0 = Math.Min(newY0, yi.Start); newY1 = Math.Max(newY1, yi.End); }
 
-                // Clamp to full outer rectangle
                 newX0 = Math.Max(newX0, xMin);
                 newX1 = Math.Min(newX1, xMax);
                 newY0 = Math.Max(newY0, yMin);
@@ -168,13 +162,23 @@ namespace Housefly.Construction
                     solidsOut.Add(new Rectangle3d(basePlane, new Interval(newX0, newX1), new Interval(newY0, newY1)));
             }
 
+            // 5️⃣ Filter voids outside solids
+            var filteredVoids = new List<Rectangle3d>();
+            foreach (var v in voidsOut)
+            {
+                bool overlaps = false;
+                foreach (var s in solidsOut)
+                {
+                    if (RectanglesOverlap(v, s)) { overlaps = true; break; }
+                }
+                if (!overlaps) filteredVoids.Add(v);
+            }
 
-            // 4) Outputs
+            // ✅ Outputs
             DA.SetDataList(0, solidsOut);
             DA.SetDataList(1, bordersOut);
             DA.SetDataList(2, ribsOut);
-            DA.SetDataList(3, voidsOut);
-            DA.SetData(4, calculateBrep ? CreateConcreteSlab(rect, voidsOut, voidHeight, topSlabHeight) : null);
+            DA.SetDataList(3, filteredVoids);
         }
 
         // ---------- Helpers ----------
@@ -192,7 +196,6 @@ namespace Housefly.Construction
                 double s = cur;
                 double e = Math.Min(end, cur + len);
                 if (e - s <= eps) break;
-
                 list.Add(new Interval1D(s, e, isRib));
                 cur = e;
                 isRib = !isRib;
@@ -200,9 +203,47 @@ namespace Housefly.Construction
             return list;
         }
 
+        private double FindNextGridBoundary(List<Interval1D> intervals, double value, bool fromMin)
+        {
+            if (intervals.Count == 0) return value;
+            if (fromMin)
+            {
+                foreach (var i in intervals)
+                    if (i.End > value)
+                        return i.End; // snap inward (next boundary inside)
+            }
+            else
+            {
+                for (int j = intervals.Count - 1; j >= 0; j--)
+                    if (intervals[j].Start < value)
+                        return intervals[j].Start;
+            }
+            return value;
+        }
+
         private bool RangesOverlap(double a0, double a1, double b0, double b1)
         {
             return (a1 > b0) && (b1 > a0);
+        }
+
+        private bool RectanglesOverlap(Rectangle3d a, Rectangle3d b)
+        {
+            Plane pl = a.Plane;
+            pl.RemapToPlaneSpace(a.Corner(0), out Point3d a0);
+            pl.RemapToPlaneSpace(a.Corner(2), out Point3d a1);
+            pl.RemapToPlaneSpace(b.Corner(0), out Point3d b0);
+            pl.RemapToPlaneSpace(b.Corner(2), out Point3d b1);
+
+            double ax0 = Math.Min(a0.X, a1.X);
+            double ax1 = Math.Max(a0.X, a1.X);
+            double ay0 = Math.Min(a0.Y, a1.Y);
+            double ay1 = Math.Max(a0.Y, a1.Y);
+            double bx0 = Math.Min(b0.X, b1.X);
+            double bx1 = Math.Max(b0.X, b1.X);
+            double by0 = Math.Min(b0.Y, b1.Y);
+            double by1 = Math.Max(b0.Y, b1.Y);
+
+            return (ax1 > bx0 && bx1 > ax0 && ay1 > by0 && by1 > ay0);
         }
 
         private class Interval1D
@@ -210,64 +251,6 @@ namespace Housefly.Construction
             public double Start, End;
             public bool IsRib;
             public Interval1D(double s, double e, bool r) { Start = s; End = e; IsRib = r; }
-        }
-
-        // create solid brep for final concrete slab
-
-        private Brep CreateConcreteSlab(Rectangle3d rect, List<Rectangle3d> voidsOut, double voidHeight, double topSlabHeight)
-        {
-            if (!rect.IsValid) return null;
-            if (voidHeight <= 0 && topSlabHeight <= 0) return null;
-
-            // Total height
-            double totalHeight = voidHeight + topSlabHeight;
-
-            // Create the full concrete slab (as extrusion of the full rectangle)
-            var slabCrv = rect.ToNurbsCurve();
-
-            Brep slabBrep = Extrusion.CreateExtrusion(slabCrv, rect.Plane.ZAxis * totalHeight).ToBrep();
-            if (!slabBrep.IsSolid)
-                slabBrep = slabBrep.CapPlanarHoles(RhinoDoc.ActiveDoc.ModelAbsoluteTolerance);
-            if (slabBrep == null) return null;
-
-            // Create void solids (extruded downward)
-            var voidBreps = new List<Brep>();
-            Vector3d down = -rect.Plane.ZAxis * voidHeight;
-
-            foreach (var vRect in voidsOut)
-            {
-                if (!vRect.IsValid) continue;
-                var vCrv = vRect.ToNurbsCurve();
-
-                Brep voidB = Extrusion.CreateExtrusion(vCrv, down).ToBrep();
-                if (!voidB.IsSolid)
-                    voidB = voidB.CapPlanarHoles(RhinoDoc.ActiveDoc.ModelAbsoluteTolerance);
-                if (voidB != null) voidBreps.Add(voidB);
-            }
-
-            if (voidBreps.Count == 0)
-                return slabBrep; // no voids -> solid slab
-
-            // Perform boolean difference (subtract voids)
-            var diff = Brep.CreateBooleanDifference(new List<Brep>() { slabBrep }, voidBreps, RhinoDoc.ActiveDoc.ModelAbsoluteTolerance);
-
-            if (diff == null || diff.Length == 0)
-                return slabBrep; // fallback
-
-            return diff[0];
-        }
-
-        /// <summary>
-        /// Provides an Icon for the component.
-        /// </summary>
-        protected override System.Drawing.Bitmap Icon
-        {
-            get
-            {
-                //You can add image files to your project resources and access them like this:
-                // return Resources.IconForThisComponent;
-                return null;
-            }
         }
 
         /// <summary>
