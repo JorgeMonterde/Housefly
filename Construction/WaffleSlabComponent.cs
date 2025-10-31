@@ -66,10 +66,10 @@ namespace Housefly.Construction
 
             // Normalize border widths
             while (borderWidths.Count < 4) borderWidths.Add(0);
-            double left = borderWidths[0];
-            double right = borderWidths[1];
-            double bottom = borderWidths[2];
-            double top = borderWidths[3];
+            double leftNom = borderWidths[0];
+            double rightNom = borderWidths[1];
+            double bottomNom = borderWidths[2];
+            double topNom = borderWidths[3];
 
             Plane basePlane = rect.Plane;
             basePlane.RemapToPlaneSpace(rect.Corner(0), out Point3d p0);
@@ -80,27 +80,34 @@ namespace Housefly.Construction
             double yMin = Math.Min(p0.Y, p2.Y);
             double yMax = Math.Max(p0.Y, p2.Y);
 
-            // Step 1️⃣ Base inner region from nominal borders
-            double innerXMin = xMin + left;
-            double innerXMax = xMax - right;
-            double innerYMin = yMin + bottom;
-            double innerYMax = yMax - top;
+            double module = ribWidth + voidLength;
 
-            // Step 2️⃣ Build a temporary full grid to find snapping lines
-            var tempX = BuildAlternatingIntervals(xMin, xMax, ribWidth, voidLength);
-            var tempY = BuildAlternatingIntervals(yMin, yMax, ribWidth, voidLength);
+            // Compute usable dimensions and centering
+            double totalWidth = (xMax - xMin) - (leftNom + rightNom);
+            double totalHeight = (yMax - yMin) - (bottomNom + topNom);
 
-            // Snap the inner limits to the nearest grid line that keeps borders fully enclosing ribs/voids
-            innerXMin = FindNextGridBoundary(tempX, innerXMin, true);   // snap inward
-            innerXMax = FindNextGridBoundary(tempX, innerXMax, false);  // snap inward
-            innerYMin = FindNextGridBoundary(tempY, innerYMin, true);
-            innerYMax = FindNextGridBoundary(tempY, innerYMax, false);
+            // How many full modules fit
+            int numX = Math.Max(1, (int)Math.Floor(totalWidth / module));
+            int numY = Math.Max(1, (int)Math.Floor(totalHeight / module));
 
-            // 2️⃣ Build grid inside snapped borders
+            // Actual grid width/height used
+            double usedWidth = numX * module;
+            double usedHeight = numY * module;
+
+            // Remaining gaps to distribute equally (centering)
+            double extraX = ((xMax - xMin) - usedWidth);
+            double extraY = ((yMax - yMin) - usedHeight);
+
+            double innerXMin = xMin + extraX / 2;
+            double innerXMax = xMax - extraX / 2;
+            double innerYMin = yMin + extraY / 2;
+            double innerYMax = yMax - extraY / 2;
+
+            // 1. Build grid inside centered area
             var xIntervals = BuildAlternatingIntervals(innerXMin, innerXMax, ribWidth, voidLength);
             var yIntervals = BuildAlternatingIntervals(innerYMin, innerYMax, ribWidth, voidLength);
 
-            // Borders (expanded to snapped limits)
+            // 2. Build borders (now symmetric)
             var bordersOut = new List<Rectangle3d>
         {
             new Rectangle3d(basePlane, new Interval(xMin, innerXMin), new Interval(yMin, yMax)), // Left
@@ -109,7 +116,7 @@ namespace Housefly.Construction
             new Rectangle3d(basePlane, new Interval(innerXMin, innerXMax), new Interval(innerYMax, yMax))  // Top
         };
 
-            // 3️⃣ Build ribs + voids
+            // 3. Build ribs + voids
             var ribsOut = new List<Rectangle3d>();
             var voidsOut = new List<Rectangle3d>();
 
@@ -127,7 +134,7 @@ namespace Housefly.Construction
                 }
             }
 
-            // 4️⃣ Pillar solids (same as before)
+            // 4. Pillar solids (same expansion as before)
             var solidsOut = new List<Rectangle3d>();
             foreach (var pl in planes)
             {
@@ -162,7 +169,7 @@ namespace Housefly.Construction
                     solidsOut.Add(new Rectangle3d(basePlane, new Interval(newX0, newX1), new Interval(newY0, newY1)));
             }
 
-            // 5️⃣ Filter voids outside solids
+            // 5. Filter voids under solids
             var filteredVoids = new List<Rectangle3d>();
             foreach (var v in voidsOut)
             {
@@ -171,10 +178,11 @@ namespace Housefly.Construction
                 {
                     if (RectanglesOverlap(v, s)) { overlaps = true; break; }
                 }
-                if (!overlaps) filteredVoids.Add(v);
+                if (!overlaps)
+                    filteredVoids.Add(v);
             }
 
-            // ✅ Outputs
+            // Outputs
             DA.SetDataList(0, solidsOut);
             DA.SetDataList(1, bordersOut);
             DA.SetDataList(2, ribsOut);
@@ -201,24 +209,6 @@ namespace Housefly.Construction
                 isRib = !isRib;
             }
             return list;
-        }
-
-        private double FindNextGridBoundary(List<Interval1D> intervals, double value, bool fromMin)
-        {
-            if (intervals.Count == 0) return value;
-            if (fromMin)
-            {
-                foreach (var i in intervals)
-                    if (i.End > value)
-                        return i.End; // snap inward (next boundary inside)
-            }
-            else
-            {
-                for (int j = intervals.Count - 1; j >= 0; j--)
-                    if (intervals[j].Start < value)
-                        return intervals[j].Start;
-            }
-            return value;
         }
 
         private bool RangesOverlap(double a0, double a1, double b0, double b1)
