@@ -29,7 +29,8 @@ namespace Housefly.Construction
             pManager.AddNumberParameter("Offset Length", "L", "Half-size of pillar solid from center", GH_ParamAccess.item, 0.5);
             pManager.AddNumberParameter("Rib Width", "W_rib", "Rib width", GH_ParamAccess.item, 0.2);
             pManager.AddNumberParameter("Void Length", "L_void", "Void (square) length", GH_ParamAccess.item, 1.0);
-            pManager.AddNumberParameter("Border Widths", "Borders", "Widths for solid borders [left, right, bottom, top]", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Border Widths", "Borders", "Nominal widths for solid borders [left, right, bottom, top]", GH_ParamAccess.list, new List<double>() { 0.5, 1, 1.5, 2});
+            pManager.AddBooleanParameter("Start With Void", "StartVoid", "If true, grid starts with a void instead of a rib.", GH_ParamAccess.item, false);
         }
 
         /// <summary>
@@ -38,7 +39,7 @@ namespace Housefly.Construction
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
             pManager.AddRectangleParameter("Solids", "S", "Pillar solids (expanded to grid boundaries)", GH_ParamAccess.list);
-            pManager.AddRectangleParameter("Borders", "B", "Solid border rectangles", GH_ParamAccess.list);
+            pManager.AddRectangleParameter("Borders", "B", "Solid border rectangles (centered, snapped to grid)", GH_ParamAccess.list);
             pManager.AddRectangleParameter("Ribs", "R", "Rib grid rectangles", GH_ParamAccess.list);
             pManager.AddRectangleParameter("Voids", "V", "Void grid rectangles (filtered: no overlaps under solids)", GH_ParamAccess.list);
         }
@@ -55,6 +56,7 @@ namespace Housefly.Construction
             double ribWidth = 0;
             double voidLength = 0;
             var borderWidths = new List<double>();
+            bool startWithVoid = false;
 
             if (!DA.GetData(0, ref rect)) return;
             if (!DA.GetDataList(1, planes)) return;
@@ -62,9 +64,9 @@ namespace Housefly.Construction
             if (!DA.GetData(3, ref ribWidth)) return;
             if (!DA.GetData(4, ref voidLength)) return;
             if (!DA.GetDataList(5, borderWidths)) return;
+            if (!DA.GetData(6, ref startWithVoid)) return;
             if (!rect.IsValid) return;
 
-            // Normalize border widths
             while (borderWidths.Count < 4) borderWidths.Add(0);
             double leftNom = borderWidths[0];
             double rightNom = borderWidths[1];
@@ -82,19 +84,15 @@ namespace Housefly.Construction
 
             double module = ribWidth + voidLength;
 
-            // Compute usable dimensions and centering
             double totalWidth = (xMax - xMin) - (leftNom + rightNom);
             double totalHeight = (yMax - yMin) - (bottomNom + topNom);
 
-            // How many full modules fit
             int numX = Math.Max(1, (int)Math.Floor(totalWidth / module));
             int numY = Math.Max(1, (int)Math.Floor(totalHeight / module));
 
-            // Actual grid width/height used
             double usedWidth = numX * module;
             double usedHeight = numY * module;
 
-            // Remaining gaps to distribute equally (centering)
             double extraX = ((xMax - xMin) - usedWidth);
             double extraY = ((yMax - yMin) - usedHeight);
 
@@ -103,20 +101,17 @@ namespace Housefly.Construction
             double innerYMin = yMin + extraY / 2;
             double innerYMax = yMax - extraY / 2;
 
-            // 1. Build grid inside centered area
-            var xIntervals = BuildAlternatingIntervals(innerXMin, innerXMax, ribWidth, voidLength);
-            var yIntervals = BuildAlternatingIntervals(innerYMin, innerYMax, ribWidth, voidLength);
+            var xIntervals = BuildAlternatingIntervals(innerXMin, innerXMax, ribWidth, voidLength, startWithVoid);
+            var yIntervals = BuildAlternatingIntervals(innerYMin, innerYMax, ribWidth, voidLength, startWithVoid);
 
-            // 2. Build borders (now symmetric)
             var bordersOut = new List<Rectangle3d>
         {
-            new Rectangle3d(basePlane, new Interval(xMin, innerXMin), new Interval(yMin, yMax)), // Left
-            new Rectangle3d(basePlane, new Interval(innerXMax, xMax), new Interval(yMin, yMax)), // Right
-            new Rectangle3d(basePlane, new Interval(innerXMin, innerXMax), new Interval(yMin, innerYMin)), // Bottom
-            new Rectangle3d(basePlane, new Interval(innerXMin, innerXMax), new Interval(innerYMax, yMax))  // Top
+            new Rectangle3d(basePlane, new Interval(xMin, innerXMin), new Interval(yMin, yMax)),
+            new Rectangle3d(basePlane, new Interval(innerXMax, xMax), new Interval(yMin, yMax)),
+            new Rectangle3d(basePlane, new Interval(innerXMin, innerXMax), new Interval(yMin, innerYMin)),
+            new Rectangle3d(basePlane, new Interval(innerXMin, innerXMax), new Interval(innerYMax, yMax))
         };
 
-            // 3. Build ribs + voids
             var ribsOut = new List<Rectangle3d>();
             var voidsOut = new List<Rectangle3d>();
 
@@ -134,7 +129,6 @@ namespace Housefly.Construction
                 }
             }
 
-            // 4. Pillar solids (same expansion as before)
             var solidsOut = new List<Rectangle3d>();
             foreach (var pl in planes)
             {
@@ -169,7 +163,6 @@ namespace Housefly.Construction
                     solidsOut.Add(new Rectangle3d(basePlane, new Interval(newX0, newX1), new Interval(newY0, newY1)));
             }
 
-            // 5. Filter voids under solids
             var filteredVoids = new List<Rectangle3d>();
             foreach (var v in voidsOut)
             {
@@ -182,20 +175,17 @@ namespace Housefly.Construction
                     filteredVoids.Add(v);
             }
 
-            // Outputs
             DA.SetDataList(0, solidsOut);
             DA.SetDataList(1, bordersOut);
             DA.SetDataList(2, ribsOut);
             DA.SetDataList(3, filteredVoids);
         }
 
-        // ---------- Helpers ----------
-
-        private List<Interval1D> BuildAlternatingIntervals(double start, double end, double ribW, double voidL)
+        private List<Interval1D> BuildAlternatingIntervals(double start, double end, double ribW, double voidL, bool startWithVoid)
         {
             var list = new List<Interval1D>();
             double cur = start;
-            bool isRib = true;
+            bool isRib = !startWithVoid;
             const double eps = 1e-9;
 
             while (cur + eps < end)
@@ -204,6 +194,7 @@ namespace Housefly.Construction
                 double s = cur;
                 double e = Math.Min(end, cur + len);
                 if (e - s <= eps) break;
+
                 list.Add(new Interval1D(s, e, isRib));
                 cur = e;
                 isRib = !isRib;
