@@ -14,23 +14,25 @@ namespace Housefly.Construction
         /// </summary>
         public WaffleSlabComponent()
           : base("WaffleSlabComponent", "WaffleSlab",
-              "Creates a waffle slabs as basic lines or as a brep",
+              "Creates a waffle slabs as lines for a rectangle boundary",
               "Housefly", "Construction")
         {
         }
+
+        private const double tol = 1e-6;
 
         /// <summary>
         /// Registers all the input parameters for this component.
         /// </summary>
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddRectangleParameter("Base Rectangle", "R", "Overall slab boundary", GH_ParamAccess.item);
+            pManager.AddRectangleParameter("Base Rectangle", "R", "Rectangle overall slab boundary", GH_ParamAccess.item);
             pManager.AddPlaneParameter("Pillar Planes", "P", "Pillar center planes", GH_ParamAccess.list);
-            pManager.AddNumberParameter("Offset Length", "L", "Half-size of pillar solid from center", GH_ParamAccess.item, 0.5);
-            pManager.AddNumberParameter("Rib Width", "W_rib", "Rib width", GH_ParamAccess.item, 0.2);
-            pManager.AddNumberParameter("Void Length", "L_void", "Void (square) length", GH_ParamAccess.item, 1.0);
-            pManager.AddNumberParameter("Border Widths", "Borders", "Nominal widths for solid borders [left, right, bottom, top]", GH_ParamAccess.list, new List<double>() { 0.5, 1, 1.5, 2});
-            pManager.AddBooleanParameter("Start With Void", "StartVoid", "If true, grid starts with a void instead of a rib.", GH_ParamAccess.item, false);
+            pManager.AddNumberParameter("Offset Length", "L", "Half-size of drop panels from center", GH_ParamAccess.item, 0.5);
+            pManager.AddNumberParameter("Rib Width", "RW", "Rib width", GH_ParamAccess.item, 0.2);
+            pManager.AddNumberParameter("Void Length", "VL", "Void (square) length", GH_ParamAccess.item, 1.0);
+            pManager.AddNumberParameter("Border beams widths", "BW", "Nominal widths for solid border beams [left, right, bottom, top]", GH_ParamAccess.list, new List<double>() { 0.5, 1, 1.5, 2});
+            pManager.AddBooleanParameter("Start with void", "V", "If true, grid starts with a void instead of a rib.", GH_ParamAccess.item, false);
         }
 
         /// <summary>
@@ -38,8 +40,8 @@ namespace Housefly.Construction
         /// </summary>
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddRectangleParameter("Solids", "S", "Pillar solids (expanded to grid boundaries)", GH_ParamAccess.list);
-            pManager.AddRectangleParameter("Borders", "B", "Solid border rectangles (centered, snapped to grid)", GH_ParamAccess.list);
+            pManager.AddRectangleParameter("Drop panels", "DP", "Drop panels (expanded to grid boundaries)", GH_ParamAccess.list);
+            pManager.AddRectangleParameter("Border beams", "B", "Solid border beams as rectangles (centered, snapped to grid)", GH_ParamAccess.list);
             pManager.AddRectangleParameter("Ribs", "R", "Rib grid rectangles", GH_ParamAccess.list);
             pManager.AddRectangleParameter("Voids", "V", "Void grid rectangles (filtered: no overlaps under solids)", GH_ParamAccess.list);
         }
@@ -129,7 +131,7 @@ namespace Housefly.Construction
                 }
             }
 
-            var solidsOut = new List<Rectangle3d>();
+            var dropPanelsOut = new List<Rectangle3d>();
             foreach (var pl in planes)
             {
                 basePlane.RemapToPlaneSpace(pl.Origin, out Point3d pt);
@@ -160,14 +162,14 @@ namespace Housefly.Construction
                 newY1 = Math.Min(newY1, yMax);
 
                 if (newX1 > newX0 && newY1 > newY0)
-                    solidsOut.Add(new Rectangle3d(basePlane, new Interval(newX0, newX1), new Interval(newY0, newY1)));
+                    dropPanelsOut.Add(new Rectangle3d(basePlane, new Interval(newX0, newX1), new Interval(newY0, newY1)));
             }
 
             var filteredVoids = new List<Rectangle3d>();
             foreach (var v in voidsOut)
             {
                 bool overlaps = false;
-                foreach (var s in solidsOut)
+                foreach (var s in dropPanelsOut)
                 {
                     if (RectanglesOverlap(v, s)) { overlaps = true; break; }
                 }
@@ -175,7 +177,7 @@ namespace Housefly.Construction
                     filteredVoids.Add(v);
             }
 
-            DA.SetDataList(0, solidsOut);
+            DA.SetDataList(0, dropPanelsOut);
             DA.SetDataList(1, bordersOut);
             DA.SetDataList(2, ribsOut);
             DA.SetDataList(3, filteredVoids);
@@ -204,7 +206,8 @@ namespace Housefly.Construction
 
         private bool RangesOverlap(double a0, double a1, double b0, double b1)
         {
-            return (a1 > b0) && (b1 > a0);
+            // expanded tolerance: overlaps if intervals intersect within tolerance
+            return (a1 > b0 - tol) && (b1 > a0 - tol);
         }
 
         private bool RectanglesOverlap(Rectangle3d a, Rectangle3d b)
@@ -224,7 +227,9 @@ namespace Housefly.Construction
             double by0 = Math.Min(b0.Y, b1.Y);
             double by1 = Math.Max(b0.Y, b1.Y);
 
-            return (ax1 > bx0 && bx1 > ax0 && ay1 > by0 && by1 > ay0);
+            // apply tolerance to avoid precision misses
+            return (ax1 > bx0 - tol) && (bx1 > ax0 - tol) &&
+                   (ay1 > by0 - tol) && (by1 > ay0 - tol);
         }
 
         private class Interval1D
