@@ -1,6 +1,8 @@
 ﻿using Grasshopper.Kernel;
 using Rhino;
+using Rhino.Collections;
 using Rhino.Geometry;
+using Rhino.Geometry.Intersect;
 using System;
 using System.Collections.Generic;
 
@@ -45,6 +47,9 @@ namespace Housefly.Geometry
         /// <param name="DA">The DA object is used to retrieve from inputs and store in outputs.</param>
         protected override void SolveInstance(IGH_DataAccess DA)
         {
+            // TODO: RETURN LAST POLYGON IF POLYLINES ARE CLOSED 
+
+
             Curve curveA = null;
             Curve curveB = null;
             Polyline polyA = null;
@@ -55,14 +60,14 @@ namespace Housefly.Geometry
             if (!DA.GetData(1, ref curveB)) return;
             if (!DA.GetData(2, ref flip)) return;
 
-            if (!curveA.TryGetPolyline(out polyA) || !curveA.TryGetPolyline(out polyB))
+            if(!curveA.TryGetPolyline(out polyA) || !curveB.TryGetPolyline(out polyB))
             {
-                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Could not retrieve polylines form curves");
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "could not retrieve polylines");
                 return;
-            }
+            };
 
             if (polyA == null || polyB == null) return;
-            if (polyA.Count < 2 || polyB.Count < 2)
+            if (polyA.Count< 2 || polyB.Count< 2)
             {
                 AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Polylines must have at least two points.");
                 return;
@@ -81,21 +86,16 @@ namespace Housefly.Geometry
             List<Polyline> rectangles = new List<Polyline>();
             List<Polyline> polygons = new List<Polyline>();
 
-            Point3d prevP3 = Point3d.Unset;
-            Point3d prevP4 = Point3d.Unset;
-
-            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "FLAG 0");
-
+            Point3d prevP3 = Point3d.Unset; // always on B segment
+            Point3d prevP4 = Point3d.Unset; // always on A segment
+            Point3d prevOuterIntersectionPt = Point3d.Unset;
 
             for (int i = 0; i < polyA.SegmentCount; i++)
             {
-                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"FLAG {i}");
-
-
                 Line segA = polyA.SegmentAt(i);
                 Line segB = polyB.SegmentAt(i);
 
-                // --- START PAIR ---
+                // P1 and P2
                 Point3d projA0 = segB.ClosestPoint(segA.From, true); // "true" to ensure the projected point is on the segment
                 double tA0 = segB.ClosestParameter(segA.From);
                 bool onB_A0 = (tA0 >= 0.0 && tA0 <= 1.0);
@@ -107,23 +107,23 @@ namespace Housefly.Geometry
                 Point3d p1, p2;
                 if (onB_A0)
                 {
+                    // ensure p1 and p2 are always on segments A and B respectivelly
                     p1 = segA.From;
                     p2 = projA0;
                 }
                 else if (onA_B0)
                 {
-                    p1 = segB.From;
-                    p2 = projB0;
+                    // ensure p1 and p2 are always on segments A and B respectivelly
+                    p1 = projB0;
+                    p2 = segB.From;
                 }
                 else
                 {
+                    this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"Could not get 'p1' and 'p2' on index {i}. Skipping iteration.");
                     continue;
                 }
 
-                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"FLAG {i} - A");
-
-
-                // --- END PAIR ---
+                // P3 and P4
                 Point3d projA1 = segB.ClosestPoint(segA.To, true);
                 double tA1 = segB.ClosestParameter(segA.To);
                 bool onB_A1 = (tA1 >= 0.0 && tA1 <= 1.0);
@@ -132,111 +132,88 @@ namespace Housefly.Geometry
                 double tB1 = segA.ClosestParameter(segB.To);
                 bool onA_B1 = (tB1 >= 0.0 && tB1 <= 1.0);
 
-                Point3d outerIntersectionPt = Point3d.Unset;
 
                 Point3d p3, p4;
+                Point3d outerIntersectionPt = Point3d.Unset;
                 if (onB_A1)
                 {
-                    p3 = segA.To;
-                    p4 = projA1;
+                    // ensure p3 and p4 are always on segments A and B respectivelly
+                    p3 = projA1;
+                    p4 = segA.To;
                     outerIntersectionPt = segB.To;
                 }
                 else if (onA_B1)
                 {
+                    // ensure p3 and p4 are always on segments A and B respectivelly
                     p3 = segB.To;
                     p4 = projB1;
                     outerIntersectionPt = segA.To;
                 }
                 else
                 {
+                    this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"Could not get 'p3' and 'p4' on index {i}. Skipping iteration.");
                     continue;
                 }
 
                 // Create closed rectangle polyline
-                Polyline rect = new Polyline(new List<Point3d> { p1, p2, p4, p3, p1 });
+                Polyline rect = new Polyline(new List<Point3d> { p1, p2, p3, p4, p1 });
                 if (rect.IsValid && rect.Count == 5) rectangles.Add(rect);
 
-
-
                 // Create link polygon
-                // check if p1 match with prevP3, as it is always p1 and prevP3 the ones that may coincide
-                bool p1Matching = prevP3.Equals(p1);
-                // if p2 matches too, polygon will be null
-                bool p2Matching = prevP3.Equals(p2);
+                if (!prevP3.IsValid || !prevP4.IsValid)
+                {
+                    // iteration 0 does not create polygon as "prevP3" and "prevP4" are not set
 
-                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"FLAG {i} - B - {p1Matching.ToString()}, {p2Matching.ToString()}");
+                    prevP3 = p3;
+                    prevP4 = p4;
+                    prevOuterIntersectionPt = outerIntersectionPt;
+                    continue;
+                }
 
+                // check if new points match previous ones to be aware of the turn between segments
+                bool p1Matching = prevP4.DistanceTo(p1) < RhinoDoc.ActiveDoc.ModelAbsoluteTolerance;
+                bool p2Matching = prevP3.DistanceTo(p2) < RhinoDoc.ActiveDoc.ModelAbsoluteTolerance;
 
                 List<Point3d> pointList = null;
                 if (p1Matching && p2Matching)
                 {
-                    // set new p3 and p4 values
+                    this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, $"No link polygon between rectangles on index {i}.");
+
                     prevP3 = p3;
                     prevP4 = p4;
+                    prevOuterIntersectionPt = outerIntersectionPt;
                     continue;
                 }
-
-                if (p1Matching)
+                else if (p1Matching)
                 {
-                    pointList = new List<Point3d> { prevP4, prevP3, p2, outerIntersectionPt, prevP4 };
+                    pointList = new List<Point3d> { prevP4, prevP3, prevOuterIntersectionPt, p2, prevP4 };
+                }
+                else if (p2Matching)
+                {
+                    pointList = new List<Point3d> { prevP3, prevP4, prevOuterIntersectionPt, p1, prevP3 };
                 }
                 else
                 {
-                    pointList = new List<Point3d> { prevP3, prevP4, p2, p1, prevP3 };
+                    pointList = new List<Point3d> { prevP3, prevP4, p1, p2, prevP3 };
                 }
 
                 Polyline polygon = new Polyline(pointList);
                 if (polygon.IsValid) polygons.Add(polygon);
 
-                // set new p3 and p4 values
+                // set new values values for next iteration
                 prevP3 = p3;
                 prevP4 = p4;
-
-                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"FLAG {i} - C");
-
+                prevOuterIntersectionPt = outerIntersectionPt;
             }
 
-            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"FLAG END - {rectangles.Count.ToString()}");
-
-
-            DA.SetDataList(0, rectangles);
-        }
-
-        /// <summary>
-        /// Robustly convert a Curve to a Polyline:
-        /// 1) If already PolylineCurve, extract Polyline.
-        /// 2) TryGetPolyline for lines/polylines and some polylike curves.
-        /// 3) Fallback: ToPolyline with reasonable tolerances, then extract.
-        /// </summary>
-        private static bool TryCurveToPolyline(Curve c, double tol, out Polyline pl)
-        {
-            pl = new Polyline();
-
-            if (c == null) return false;
-
-            // PolylineCurve direct path
-            if (c is PolylineCurve plc)
+            if (polyA.IsClosed || polyB.IsClosed)
             {
-                if (plc.TryGetPolyline(out pl)) return true;
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "Currrent implementation does not retrieve last polygon if polylines are closed.");
             }
 
-            // Many curves (including polylines and lines) succeed here
-            if (c.TryGetPolyline(out pl)) return true;
-
-            // Fallback: tessellate to a polyline, then extract
-            // angleToleranceRadians, chordTolerance, minEdgeLength, maxEdgeLength
-            double angleTolRad = RhinoMath.ToRadians(3.0); // fairly tight
-            double chordTol = tol * 0.5;                   // tighter than doc tol
-            double minLen = 0.0;
-            double maxLen = double.MaxValue;
-
-            PolylineCurve approx = c.ToPolyline(angleTolRad, chordTol, minLen, maxLen);
-            if (approx != null && approx.TryGetPolyline(out pl))
-                return true;
-
-            return false;
+            DA.SetDataList("Rectangles", rectangles);
+            DA.SetDataList("Link polygons", polygons);
         }
-    
 
         /// <summary>
         /// Provides an Icon for the component.
