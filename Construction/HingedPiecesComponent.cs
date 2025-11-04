@@ -25,7 +25,8 @@ namespace Housefly.Construction
         protected override void RegisterInputParams(GH_Component.GH_InputParamManager pManager)
         {
             pManager.AddLineParameter("Rail", "L", "The rail that will follow the different pieces.", GH_ParamAccess.item);
-            pManager.AddPlaneParameter("Guide plane", "P", "Plane as a guide to generate the hinges.", GH_ParamAccess.item, Plane.WorldXY);
+            // pManager.AddPlaneParameter("Guide plane", "P", "Plane as a guide to generate the hinges.", GH_ParamAccess.item, Plane.WorldXY); // replace with angle from the xy plane
+            pManager.AddNumberParameter("Angle", "A", "Angle in degrees to rotate hinges plane.", GH_ParamAccess.item, 0); // replace with angle from the xy plane
             pManager.AddIntegerParameter("Number of pieces", "N", "Number of pieces to divide the opening", GH_ParamAccess.item, 2);
             pManager.AddNumberParameter("Thickness", "T", "The frame thickness", GH_ParamAccess.item, 0.05);
             pManager.AddNumberParameter("Openness", "O", "Degree of openness from 0 to 1", GH_ParamAccess.item, 0.1);
@@ -49,7 +50,8 @@ namespace Housefly.Construction
         protected override void SolveInstance(IGH_DataAccess DA)
         {
             Line rail = Line.Unset;
-            Plane guidePlane = Plane.Unset;
+            //Plane guidePlane = Plane.Unset;
+            double degrees = 0.0;
             int numberOfPieces = 0;
             double thickness = 0.0;
             double openness = 0.0;
@@ -57,7 +59,7 @@ namespace Housefly.Construction
             bool flipRail = false;
 
             if (!DA.GetData("Rail", ref rail)) return;
-            DA.GetData("Guide plane", ref guidePlane);
+            DA.GetData("Angle", ref degrees);
             DA.GetData("Number of pieces", ref numberOfPieces);
             DA.GetData("Thickness", ref thickness);
             DA.GetData("Openness", ref openness);
@@ -67,12 +69,30 @@ namespace Housefly.Construction
             if (flipRail) rail.Flip();
 
             Vector3d railDirection = rail.Direction;
-            Vector3d guideVector = railDirection.IsParallelTo(guidePlane.XAxis) == 0 ? guidePlane.XAxis : guidePlane.YAxis;
 
+            // auxiliar rotated vector
+            Vector3d rotatedVec = rail.Direction;
+            if (!rotatedVec.Rotate(RhinoMath.ToRadians(90), Vector3d.ZAxis)) // is this rotation correct ?
+            { 
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Could not rotate vector 90 degrees in ZAxis.");
+                return;
+            }
+
+            if (!rotatedVec.Rotate(RhinoMath.ToRadians(degrees), railDirection)) // rotate hinges plane according to input
+            { 
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Could not rotate vector {degrees} degrees in Rail direction vector.");
+                return;
+            }
+
+            // should i change Plane.WorldXY plane origin first ?
+            Vector3d perpVector = this.ProjectVectorToPlane(rotatedVec, Plane.WorldXY).Unitize();
+
+            
+            // Vector3d guideVector = railDirection.IsParallelTo(guidePlane.XAxis) == 0 ? guidePlane.XAxis : guidePlane.YAxis;
             // create perpendicular vector to rail that is on the same plane as guideVector
             // perpVector = (A x B) x A
-            Vector3d normalForAuxPlane = Vector3d.CrossProduct(railDirection, guideVector);
-            Vector3d perpVector = Vector3d.CrossProduct(normalForAuxPlane, railDirection);
+            // Vector3d normalForAuxPlane = Vector3d.CrossProduct(railDirection, guideVector);
+            // Vector3d perpVector = Vector3d.CrossProduct(normalForAuxPlane, railDirection);
 
             if (!perpVector.IsValid)
             {
@@ -82,14 +102,11 @@ namespace Housefly.Construction
 
             if (changeSide) perpVector.Reverse();
 
-
             Plane plane = new Plane(rail.From, perpVector, railDirection);
             Plane secondPlane = plane.Clone();
 
-
             double pieceLength = rail.Length / numberOfPieces;
             double opennessRotation = 90 * (1 - openness);
-
 
             if (!plane.Rotate(RhinoMath.ToRadians(opennessRotation), plane.Normal))
             { 
@@ -103,7 +120,7 @@ namespace Housefly.Construction
                 return;
             }
 
-            // create list and add first rectangle
+            // create rectangles from rotated planes
             List<Rectangle3d> rectangles = new List<Rectangle3d>();
             List<Plane> planes = new List<Plane>();
 
@@ -121,9 +138,22 @@ namespace Housefly.Construction
                 planes.Add(currentPlane.Clone());
             }
 
+            // TODO: option to avoid rectangle creation ?
             DA.SetDataList("Folded rail", rectangles);
             DA.SetDataList("Piece planes", new List<Plane>());
+        }
 
+        private Vector3d ProjectVectorToPlane(Vector3d vector, Plane plane)
+        {
+            Vector3d n = plane.Normal;
+            if (!n.Unitize())
+            {
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Invalid plane normal: zero-length.");
+                return;
+            }
+            double dot = vector * n; // dot product
+            Vector3d projection = vector - dot * n;
+            return projection;
         }
 
         /// <summary>
