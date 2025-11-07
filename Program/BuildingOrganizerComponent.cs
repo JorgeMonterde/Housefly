@@ -1,9 +1,11 @@
 ﻿using Grasshopper.Kernel;
 using Grasshopper.Kernel.Data;
 using Grasshopper.Kernel.Types;
+using Rhino;
 using Rhino.Geometry;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Housefly.Program
 {
@@ -19,17 +21,15 @@ namespace Housefly.Program
         {
         }
 
-        private static readonly Random random = new Random();
-
         /// <summary>
         /// Registers all the input parameters for this component.
         /// </summary>
         protected override void RegisterInputParams(GH_Component.GH_InputParamManager pManager)
         {
-            pManager.AddCurveParameter("Base Curves", "C", "Closed curves representing building plan parts. Default: random rectangles.", GH_ParamAccess.list);
-            pManager.AddCurveParameter("Axis", "A", "Polyline serving as building axis or reference line. Default: line along X axis.", GH_ParamAccess.item);
-            pManager.AddNumberParameter("Floor Heights", "H", "Tree of lists with floor heights in meters. Default: random floors per building.", GH_ParamAccess.tree);
-            pManager.AddBooleanParameter("Interior Flags", "I", "Tree matching 'Floor Heights' indicating interior (true) or exterior (false) floors. Default: random booleans.", GH_ParamAccess.tree);
+            pManager.AddCurveParameter("Base polylines", "P", "Closed curves representing building plan parts.", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Axis", "A", "Curve serving as building axis or reference line.", GH_ParamAccess.item);
+            pManager.AddNumberParameter("Floor Heights", "H", "Tree of lists with floor heights (possitive or negative).", GH_ParamAccess.tree);
+            pManager.AddBooleanParameter("Interior Flags", "I", "Tree matching 'Floor Heights' indicating interior (true) or exterior (false) floors.", GH_ParamAccess.tree);
         }
 
         /// <summary>
@@ -37,8 +37,10 @@ namespace Housefly.Program
         /// </summary>
         protected override void RegisterOutputParams(GH_Component.GH_OutputParamManager pManager)
         {
-            pManager.AddGenericParameter("Output", "O", "Validated and processed data (placeholder for geometry output).", GH_ParamAccess.list);
             pManager.AddPlaneParameter("Floor planes", "FP", "Floor planes for each base curve", GH_ParamAccess.tree);
+            pManager.AddCurveParameter("Polylines on heights", "PH", "Polylines on each height", GH_ParamAccess.tree);
+            pManager.AddCurveParameter("Facades A", "FA", "Facades A", GH_ParamAccess.tree);
+            pManager.AddCurveParameter("Facades B", "FB", "Facades B", GH_ParamAccess.tree);
         }
 
         /// <summary>
@@ -52,10 +54,12 @@ namespace Housefly.Program
             GH_Structure<GH_Number> heightTree = null;
             GH_Structure<GH_Boolean> interiorTree = null;
 
-            if(!DA.GetDataList("Base Curves", baseCurves)) return;
+            if(!DA.GetDataList("Base polylines", baseCurves)) return;
             if(!DA.GetData("Axis", ref axis)) return;
             if(!DA.GetDataTree("Floor Heights", out heightTree)) return;
             if(!DA.GetDataTree("Interior Flags", out interiorTree)) return;
+
+            List<Polyline> basePolylines = new List<Polyline>();
 
             // VALIDATION
 
@@ -63,15 +67,13 @@ namespace Housefly.Program
 
             if (heightTree.PathCount != interiorTree.PathCount)
             {
-                AddRuntimeMessage(GH_RuntimeMessageLevel.Error,
-                    $"Height and interior trees have different branch counts: {heightTree.PathCount} vs {interiorTree.PathCount}.");
+                AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Height and interior trees have different branch counts: {heightTree.PathCount} vs {interiorTree.PathCount}.");
                 isValid = false;
             }
 
             if (baseCurves.Count != heightTree.PathCount)
             {
-                AddRuntimeMessage(GH_RuntimeMessageLevel.Error,
-                    $"Number of base curves ({baseCurves.Count}) does not match number of branches ({heightTree.PathCount}). Each footprint should correspond to one branch of floor data.");
+                AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Number of base curves ({baseCurves.Count}) does not match number of branches ({heightTree.PathCount}). Each footprint should correspond to one branch of floor data.");
                 isValid = false;
             }
 
@@ -83,35 +85,47 @@ namespace Housefly.Program
 
                 if (hCount != iCount)
                 {
-                    AddRuntimeMessage(GH_RuntimeMessageLevel.Error,
-                        $"Branch {heightTree.Paths[i]} mismatch: {hCount} heights vs {iCount} interior flags.");
+                    AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Branch {heightTree.Paths[i]} mismatch: {hCount} heights vs {iCount} interior flags.");
                     isValid = false;
                 }
             }
 
-            if (!isValid)
+            for (int i = 0; i < baseCurves.Count; i++)
             {
-                DA.SetDataList(0, new List<object>());
-                return;
+                Curve currentCurve = baseCurves[i];
+                Polyline currentPolyline = null;
+                if (!currentCurve.IsPolyline())
+                {
+                    AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Base curve of index {i} is not a polyline.");
+                    isValid = false;
+                    break;
+                }
+                if (!currentCurve.TryGetPolyline(out currentPolyline))
+                {
+                    AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Could not take polyline from base curve of index {i}.");
+                    isValid = false;
+                    break;
+                }
+
+                basePolylines.Add(currentPolyline);
             }
+
+            if (!isValid) return;
+            
 
 
             // LOGIC
             // create planes for each base curve
             GH_Structure<GH_Plane> floorsTree = new GH_Structure<GH_Plane>();
+            GH_Structure<GH_Curve> curvesTree = new GH_Structure<GH_Curve>();
+            GH_Structure<GH_Line> lateralFacadeTree = new GH_Structure<GH_Line>();
+            GH_Structure<GH_Line> longitudinalFacadeTree = new GH_Structure<GH_Line>();
 
-            for (int i = 0; i < baseCurves.Count; i++)
+            for (int i = 0; i < basePolylines.Count; i++)
             {
                 GH_Path path = heightTree.Paths[i];
+                Polyline polyline = basePolylines[i];
 
-                Curve curve = baseCurves[i];
-                Polyline polyline;
-
-                if(!curve.TryGetPolyline(out polyline))
-                {
-                    this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Base curve on index {i} could not get polyline.");
-                    return;
-                }
                 if (polyline.Count < 3)
                 {
                     this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Polyline for base curve on index {i} has less than 3 segments.");
@@ -128,23 +142,59 @@ namespace Housefly.Program
                 firstPlane.Origin = centerPoint;
                 floorsTree.Append(new GH_Plane(firstPlane), path);
 
+                // classify polyline segments to determine facades
+                List<Line> intersectedSegments = new List<Line>();
+                List<Line> nonIntersectedSegments = new List<Line>();
+                if(!ClassifyPolylineSegmentsByIntersection(axis, polyline, out intersectedSegments, out nonIntersectedSegments))
+                {
+                    this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"Base curve on index {i} could not be classified.");
+                }
+
                 // move planes to heights
-                List<double> heights = (List<double>) heightTree.get_Branch(path);
-                List<bool> interiors = (List<bool>) interiorTree.get_Branch(path);
+                List<GH_Number> heights = (List<GH_Number>) heightTree.get_Branch(path);
+                List<GH_Boolean> interiors = (List<GH_Boolean>) interiorTree.get_Branch(path);
+
+                double accumulatedHeight = 0;
 
                 for (int j = 0; j < heights.Count; j++)
                 {
+                    
                     // "acumulate" heights to move planes and base curves 
-                    Vector3d moveDown = Vector3d.ZAxis * heights[j];
+                    accumulatedHeight += heights[j].Value;
+                    Vector3d moveDown = Vector3d.ZAxis * accumulatedHeight;
+                    Transform translation = Transform.Translation(moveDown);
+                    
                     Plane floorPlane = firstPlane.Clone();
                     floorPlane.Origin = centerPoint + moveDown;
                     floorsTree.Append(new GH_Plane(floorPlane), path);
+                    
+                    Polyline polylineOnFloor = polyline.Duplicate();
+                    polylineOnFloor.Transform(translation);
+                    curvesTree.Append(new GH_Curve(polylineOnFloor.ToPolylineCurve()), path);
 
-                    bool isFloorInterior = interiors[j];
+                    List<GH_Line> lateralOnFloor = new List<GH_Line>();
+                    List<GH_Line> longitudinalOnFloor = new List<GH_Line>();
+                    for (int k = 0; k < intersectedSegments.Count; k++)
+                    {
+                        Line line = intersectedSegments[k];
+                        line.Transform(translation);
+                        lateralOnFloor.Add(new GH_Line(line));
+                    }
+                    for (int k = 0; k < nonIntersectedSegments.Count; k++)
+                    {
+                        Line line = nonIntersectedSegments[k];
+                        line.Transform(translation);
+                        longitudinalOnFloor.Add(new GH_Line(line));
+                    }
+
+                    lateralFacadeTree.AppendRange(lateralOnFloor, path);
+                    longitudinalFacadeTree.AppendRange(longitudinalOnFloor, path);
+
+                    bool isFloorInterior = interiors[j].Value;
                     if (!isFloorInterior) continue;
                     // create brep for interior space
 
-
+                    
 
                     // TODO: check adjacent cells and determine kind of partition
                     
@@ -152,19 +202,78 @@ namespace Housefly.Program
             }
 
 
-
-
-
-
-            // OUTPUTS
-
-            List<object> output = new List<object>();
-            output.AddRange(baseCurves);
-            output.Add(axis);
-            DA.SetDataList("Output", output);
-            DA.SetDataList("Floor planes", floorsTree);
+            DA.SetDataTree(0, floorsTree);
+            DA.SetDataTree(1, curvesTree);
+            DA.SetDataTree(2, lateralFacadeTree);
+            DA.SetDataTree(3, longitudinalFacadeTree);  
         }
 
+        private bool ClassifyPolylineSegmentsByIntersection(
+            Curve curveA,
+            Polyline polyB,
+            out List<Line> linesC,
+            out List<Line> linesD)
+        {
+            linesC = new List<Line>();
+            linesD = new List<Line>();
+        
+            if (curveA == null || polyB == null || polyB.Count < 2)
+                return false;
+        
+            double tol = RhinoDoc.ActiveDoc.ModelAbsoluteTolerance;
+            double angTol = RhinoDoc.ActiveDoc.ModelAngleToleranceRadians;
+        
+            // validate planarity of A
+            if (!curveA.IsPlanar())
+                return false;
+        
+            Plane planeA;
+            if (!curveA.TryGetPlane(out planeA))
+                return false;
+        
+            // validate that polyline B lies in the same plane
+            for (int i = 0; i < polyB.Count; i++)
+            {
+                if (Math.Abs(planeA.DistanceTo(polyB[i])) > tol)
+                    return false;
+            }
+        
+            int count = polyB.Count;
+            bool closed = polyB.IsClosed;
+            int segmentCount = closed ? count : count - 1;
+        
+            // process each polyline segment
+            for (int i = 0; i < segmentCount; i++)
+            {
+                Point3d p0 = polyB[i];
+                Point3d p1 = polyB[(i + 1) % count];
+        
+                Line line = new Line(p0, p1);
+                LineCurve segment = new LineCurve(line);
+        
+                // intersection test with Curve A
+                var x = Rhino.Geometry.Intersect.Intersection.CurveCurve(
+                    curveA, segment, tol, angTol);
+        
+                bool hit = false;
+                for (int j = 0; j < x.Count; j++)
+                {
+                    if (x[j].IsPoint)
+                    {
+                        hit = true;
+                        break;
+                    }
+                }
+        
+                if (hit)
+                    linesC.Add(line);
+                else
+                    linesD.Add(line);
+            }
+        
+            return true;
+        }
+        
 
 
         /// <summary>
