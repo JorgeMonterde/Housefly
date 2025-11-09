@@ -137,14 +137,14 @@ namespace Housefly.Geometry
                 Point3d outerIntersectionPt = Point3d.Unset;
                 if (onB_A1)
                 {
-                    // ensure p3 and p4 are always on segments A and B respectivelly
+                    // ensure p3 and p4 are always on segments B and A respectivelly
                     p3 = projA1;
                     p4 = segA.To;
                     outerIntersectionPt = segB.To;
                 }
                 else if (onA_B1)
                 {
-                    // ensure p3 and p4 are always on segments A and B respectivelly
+                    // ensure p3 and p4 are always on segments B and A respectivelly
                     p3 = segB.To;
                     p4 = projB1;
                     outerIntersectionPt = segA.To;
@@ -190,11 +190,11 @@ namespace Housefly.Geometry
                 }
                 else if (p2Matching)
                 {
-                    pointList = new List<Point3d> { prevP3, prevP4, prevOuterIntersectionPt, p1, prevP3 };
+                    pointList = new List<Point3d> { prevP4, prevP3, p1, prevOuterIntersectionPt, prevP4 };
                 }
                 else
                 {
-                    pointList = new List<Point3d> { prevP3, prevP4, p1, p2, prevP3 };
+                    pointList = new List<Point3d> { prevP4, prevP3, p2, p1, prevP4 };
                 }
 
                 Polyline polygon = new Polyline(pointList);
