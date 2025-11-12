@@ -1,8 +1,8 @@
-﻿using System;
-using System.Collections.Generic;
-
 using Grasshopper.Kernel;
+using Rhino;
 using Rhino.Geometry;
+using System;
+using System.Collections.Generic;
 
 namespace Housefly.Program
 {
@@ -18,13 +18,15 @@ namespace Housefly.Program
         {
         }
 
+
+
         /// <summary>
         /// Registers all the input parameters for this component.
         /// </summary>
         protected override void RegisterInputParams(GH_Component.GH_InputParamManager pManager)
         {
-            pManager.AddNumberParameter("Width", "W", "Width of the rectangle", GH_ParamAccess.item);
-            pManager.AddNumberParameter("Depth", "D", "Depth of the rectangle", GH_ParamAccess.item);
+            pManager.AddNumberParameter("Width", "W", "Width of the rectangle", GH_ParamAccess.item, 3.0);
+            pManager.AddNumberParameter("Depth", "D", "Depth of the rectangle", GH_ParamAccess.item, 6.0);
         }
 
         /// <summary>
@@ -32,10 +34,11 @@ namespace Housefly.Program
         /// </summary>
         protected override void RegisterOutputParams(GH_Component.GH_OutputParamManager pManager)
         {
-            pManager.AddLineParameter("Entrance", "E", "Entrance line", GH_ParamAccess.item);
+            pManager.AddCurveParameter("Entrance", "E", "Entrance door", GH_ParamAccess.item);
             pManager.AddLineParameter("Exterior walls", "EW", "exterior walls", GH_ParamAccess.list);
             pManager.AddLineParameter("Interior partitions", "IP", "interior partitions", GH_ParamAccess.list);
-            pManager.AddLineParameter("Cabin doors", "CD", "Door lines for cabin doors", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Cabin doors", "CD", "Door curves for cabin doors", GH_ParamAccess.list);
+            pManager.AddPlaneParameter("Toilet planes", "TP", "Toilet base planes", GH_ParamAccess.list);
         }
 
         /// <summary>
@@ -45,21 +48,38 @@ namespace Housefly.Program
         protected override void SolveInstance(IGH_DataAccess DA)
         {
             // IMPROVEMENTS:
-            // - Fix toilet door creation for only one cabin
-            // - Add door, toilet and sink drawings
+            // - Add sink drawings
 
-            double entranceDepth = 2.0;
-            double entranceWidth = 1.5;
-            double accessibleCabinDepth = 2.5;
-            double accessibleDoorSize = 1.20;
-            double minimumCabinWidth = 0.90;
-            double minimumCabinDepth = 1.50;
+            double sinkWidth = 0.60,
+                centralSpaceWidth = 1.50,
+                entranceDepth = 2.0,
+                entranceWidth = 1.5,
+                accessibleCabinDepth = 2.0,
+                accessibleDoorSize = 1.20,
+                toiletCabinDoor = 0.70,
+                toiletCabinDoorFrame = 0.10,
+                minimumCabinWidth = toiletCabinDoor + toiletCabinDoorFrame * 2,
+                minimumCabinDepth = 1.50,
+                toiletDistanceFromWall = 0.10,
+                minWidth = sinkWidth + centralSpaceWidth + minimumCabinDepth,
+                minDepth = entranceWidth + minimumCabinWidth + accessibleCabinDepth;
 
             double width = 0;
             double depth = 0;
 
-            if (!DA.GetData(0, ref width)) return;
-            if (!DA.GetData(1, ref depth)) return;
+            DA.GetData(0, ref width);
+            DA.GetData(1, ref depth);
+
+            if (width < minWidth)
+            {
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, $"Width is too low; minimum width will be used instead ({width})");
+                width = minWidth;
+            }
+            if (depth < minDepth)
+            {
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, $"Depth is too low; minimum depth will be used instead ({depth})");
+                depth = minDepth;
+            }
 
             Point3d A = new Point3d(0, 0, 0);
             Point3d B = new Point3d(width, 0, 0);
@@ -80,6 +100,7 @@ namespace Housefly.Program
             Point3d E = X + perpAB * entranceWidth;
 
             Line entrance = new Line(E, X);
+            PolylineCurve entrancePolyline = this.CreateDoorPolyline(entrance, accessibleDoorSize, true, true);
 
             // Y = closest point on BC to E
             double tBC = BC_line.ClosestParameter(E);
@@ -106,7 +127,7 @@ namespace Housefly.Program
             Point3d S = R + dirDC * accessibleDoorSize;
 
             Line DprimeR = new Line(Dprime, R);
-            Line RS = new Line(R, S);
+            Line accessibleDoorLine = new Line(R, S);
             Line SCprime = new Line(S, Cprime);
 
             // non-accessible cabins
@@ -130,51 +151,107 @@ namespace Housefly.Program
             Vector3d dirCD = D - C;
             dirCD.Unitize();
 
-            List<Line> cabinWalls = new List<Line>();
-            List<Line> cabinDoors = new List<Line>();
+            Point3d accessibleToiletPt = C + dirCB * (accessibleCabinDepth / 2) - dirDC * toiletDistanceFromWall;
+            Plane accessibleToiletPlane = new Plane(accessibleToiletPt, dirYC, dirCD);
+            List<Plane> toiletPlanes = new List<Plane>() { accessibleToiletPlane };
 
-            // build cabin partitions
-            for (int i = 1; i < cabinCount; i++)
+            Point3d normalToiletsBasePt = Y + dirYC * (finalWidth / 2) + dirCD * toiletDistanceFromWall;
+            Plane normalToiletsBasePlane = new Plane(normalToiletsBasePt, dirYC, dirCD);
+
+            List<Line> cabinWalls = new List<Line>();
+            List<Curve> cabinDoors = new List<Curve>();
+
+            // build toilet planes and cabin partitions
+            for (int i = 0; i <= cabinCount; i++)
             {
-                Point3d Pi = Y + dirYC * (finalWidth * i);
-                Line partition = new Line(Pi, Pi + dirCD * minimumCabinDepth);
+                Vector3d traslationVector = dirYC * (finalWidth * i);
+
+                if (i < cabinCount) // skip last 
+                {
+                    Plane toiletPlane = normalToiletsBasePlane.Clone();
+                    toiletPlane.Origin = normalToiletsBasePlane.Origin + traslationVector;
+                    toiletPlanes.Add(toiletPlane);
+                }
+
+                Point3d firstPartitionPt = Y + traslationVector;
+                Line partition = new Line(firstPartitionPt, firstPartitionPt + dirCD * minimumCabinDepth);
                 cabinWalls.Add(partition);
             }
 
-            // first cabin door
-            if (cabinWalls.Count > 0)
-            {
-                Point3d firstBottom = cabinWalls[0].To;
-                Point3d firstProj = wallEY.ClosestPoint(firstBottom, false);
-                Line firstDoor = new Line(firstBottom, firstProj);
-                cabinDoors.Add(firstDoor);
-            }
-
-            // middle cabin doors (between partitions)
+            // cabin doors (between partitions)
             for (int i = 1; i < cabinWalls.Count; i++)
             {
                 Point3d prevBottom = cabinWalls[i - 1].To;
                 Point3d nextBottom = cabinWalls[i].To;
-                cabinDoors.Add(new Line(prevBottom, nextBottom));
+                Line doorLine = new Line(prevBottom, nextBottom);
+                PolylineCurve door = this.CreateDoorPolyline(doorLine, toiletCabinDoor, false, false);
+                cabinDoors.Add(door);
             }
+            cabinDoors.Add(this.CreateDoorPolyline(accessibleDoorLine, accessibleDoorLine.Length, true, false));
 
-            // last cabin door
-            if (cabinWalls.Count > 0)
-            {
-                Point3d lastBottom = cabinWalls[cabinWalls.Count - 1].To;
-                Point3d lastProj = SCprime.ClosestPoint(lastBottom, false);
-                Line lastDoor = new Line(lastBottom, lastProj);
-                cabinDoors.Add(lastDoor);
-            }
+            // remove first and last partitions
+            cabinWalls.RemoveAt(0);
+            cabinWalls.RemoveAt(cabinWalls.Count - 1);
 
+            // add accessible cabin partitions
             cabinWalls.Add(DprimeR);
             cabinWalls.Add(SCprime);
-            cabinDoors.Add(RS);
 
-            DA.SetData(0, entrance);
+            DA.SetData(0, entrancePolyline);
             DA.SetDataList(1, new List<Line>() { wallAB, wallYC, wallCD_, wallDA_, wallEY });
             DA.SetDataList(2, cabinWalls);
             DA.SetDataList(3, cabinDoors);
+            DA.SetDataList(4, toiletPlanes);
+        }
+
+        private PolylineCurve CreateDoorPolyline(Line baseLine, double doorSize, bool changeSide, bool flipLines)
+        {
+            if (!baseLine.IsValid)
+            {
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "Line is not valid.");
+                return null;
+            }
+
+            double lineLength = baseLine.Length;
+            if (lineLength < doorSize)
+            {
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "Line length is smaller than door size.");
+                return null;
+            }
+
+            if (flipLines) baseLine.Flip();
+
+            Point3d start = baseLine.From;
+            Point3d end = baseLine.To;
+
+            Vector3d dir = end - start;
+            dir.Unitize();
+
+            Vector3d perp = Vector3d.CrossProduct(dir, Vector3d.ZAxis);
+            perp.Unitize();
+            if (changeSide) perp.Reverse();
+
+            double frameLength = (lineLength - doorSize) / 2;
+
+            Point3d p1 = start;
+            Point3d p2 = start + dir * frameLength;
+            Point3d p3 = p2 + perp * doorSize;
+            Point3d p4 = end - dir * frameLength;
+            Point3d p5 = end;
+
+            List<Point3d> points = p1.DistanceTo(p2) < RhinoDoc.ActiveDoc.ModelAbsoluteTolerance
+                ? new List<Point3d> { start, start + perp * lineLength, end }
+                : new List<Point3d> { p1, p2, p3, p4, p5 };
+
+            Polyline polyline = new Polyline(points);
+
+            if (!polyline.IsValid)
+            {
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "Created polyline not valid.");
+                return null;
+            }
+
+            return polyline.ToPolylineCurve();
         }
 
         /// <summary>
