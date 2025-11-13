@@ -109,36 +109,118 @@ namespace Housefly.Program
 
             // LOGIC
 
-            GH_Structure<GH_Line> lineTree = new GH_Structure<GH_Line>();
-            GH_Structure<GH_Number> facadeHeightTree = new GH_Structure<GH_Number>();
+            
 
-            // 1. mix heights of A and B and convert them to "accumulated heights"
+            // 1. convert heights to "accumulated heights"
 
-            // 2. sort all accumulated heights
+            GH_Structure<GH_Number> accumulatedHeightTreeA = this.CreateAccumulatedValueTree(heightTreeA);
+            GH_Structure<GH_Number> accumulatedHeightTreeB = this.CreateAccumulatedValueTree(heightTreeB);
 
-            // 3. remove duplicated heights (keep both paths?) 
+            // 2. mix and sort all accumulated heights
 
-            // 4. iterate resulting sorted height list
+            List<(double value, GH_Path path)> allAccumulatedHeights = new List<(double value, GH_Path path)>(); // list of tuples
 
-            // 5. on each height (either on A or B), find the height on the other tree (either A or B) that is the biggest opn its tree but smaller than the iterated value. 
+            // gather all numbers + paths from Tree A
+            foreach (var kv in accumulatedHeightTreeA.Paths.SelectMany(p => accumulatedHeightTreeA.get_Branch(p).Select(n => (n, p))))
+            {
+                GH_Number num = kv.n;
+                GH_Path path = kv.p;
+                if (num != null)
+                    allAccumulatedHeights.Add((num.Value, path));
+            }
 
-            // 6. compare both heights (of A and B) and assign the translator vector according to interior condition:
+            // gather all numbers + paths from Tree B
+            foreach (var kv in accumulatedHeightTreeB.Paths.SelectMany(p => accumulatedHeightTreeB.get_Branch(p).Select(n => (n, p))))
+            {
+                GH_Number num = kv.n;
+                GH_Path path = kv.p;
+                if (num != null)
+                    allAccumulatedHeights.Add((num.Value, path));
+            }
+
+            // sort by the numeric value
+            allAccumulatedHeights.Sort((a, b) => a.value.CompareTo(b.value));
+
+            // unpack into parallel lists
+            // List<double> sortedValues = allAccumulatedHeights.Select(tuple => tuple.value).ToList();
+            // List<GH_Path> sortedPaths  = allAccumulatedHeights.Select(tuple => tuple.path).ToList();
+
+
+            // 3. remove duplicated heights and keep all paths 
+
+            List<(double value, List<GH_Path> paths)> uniqueAccumulatedHeights = new List<(double value, List<GH_Path> paths)>(); // list of tuples; tuples of numbers and lists of GH_Path
+            
+            for (int i = 1; i < allAccumulatedHeights.Count; i++)
+            {
+                (double value, GH_Path path) prevTuple = allAccumulatedHeights[i - 1];
+                (double value, GH_Path path) currentTuple = allAccumulatedHeights[i];
+                
+                if(currentTuple.value == prevTuple.value && uniqueAccumulatedHeights.Count != 0)
+                {
+                    // add new path to previous unique tuple
+                    uniqueAccumulatedHeights[i - 1].paths.Add(currentTuple.path);
+                    continue;
+                }
+
+                (double value, List<GH_Path> paths) uniqueTuple = (currentTuple.value, new List<GH_Path>(){ currentTuple.path })
+                uniqueAccumulatedHeights.Add(uniqueTuple);
+            }
+
+            // 4.iterate resulting sorted height list: on each height (either on A or B), find the height on the other tree (either A or B) that is the biggest on its tree but smaller than the iterated value. 
+
+            for (int i = 1; i < allAccumulatedHeights.Count; i++)
+            {
+                (double value, GH_Path path) prevTuple = allAccumulatedHeights[i - 1];
+                (double value, GH_Path path) currentTuple = allAccumulatedHeights[i];
+                
+                if(currentTuple.value == prevTuple.value && uniqueAccumulatedHeights.Count != 0)
+                {
+                    // add new path to previous unique tuple
+                    uniqueAccumulatedHeights[i - 1].paths.Add(currentTuple.path);
+                    continue;
+                }
+
+                (double value, List<GH_Path> paths) uniqueTuple = (currentTuple.value, new List<GH_Path>(){ currentTuple.path })
+                uniqueAccumulatedHeights.Add(uniqueTuple);
+            }
+
+
+
+            // 5. compare both heights (of A and B) and assign the translator vector according to interior condition:
             // (int && int) || (ext && ext) = null 
             // int && ext = -> 
             // ext && int = <- 
 
-            // 7. store vector on new tree
+            // 6. store vector on new tree
 
-            // for (int i = 0; i < basePolylines.Count; i++)
-            // {
-            //     GH_Path path = heightTree.Paths[i];
-            //     Polyline polyline = basePolylines[i];
 
-            // }
 
             DA.SetDataTree(0, lineTree);
             DA.SetDataTree(1, facadeHeightTree);
         }
+
+
+        private GH_Structure<GH_Number> CreateAccumulatedValueTree(GH_Structure<GH_Number> tree)
+        {
+            GH_Structure<GH_Number> accumulatedTree = new GH_Structure<GH_Number>();
+            double accumulatedHeight = 0;
+
+            for (int i = 0; i < tree.Branches.Count; i++)
+            {
+                GH_Path path = tree.Paths[i];
+                List<double> numbers = tree.Branch[path]; // need to be GH_Number ?
+                
+                if(numbers.Count != 1)
+                {
+                    this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"List on branch with path {path} has {numbers.Count} elements and it must have one.");
+                } 
+
+                accumulatedHeight += numbers[0];
+                accumulatedTree.Append(new GH_Number(accumulatedHeight), path);
+            }
+            
+            return accumulatedTree;
+        } 
         
 
 
