@@ -1,4 +1,4 @@
-﻿using Grasshopper.Kernel;
+﻿﻿using Grasshopper.Kernel;
 using Grasshopper.Kernel.Data;
 using Grasshopper.Kernel.Types;
 using Rhino;
@@ -39,7 +39,8 @@ namespace Housefly.Program
         {
             pManager.AddPlaneParameter("Floor planes", "FP", "Floor planes for each base curve", GH_ParamAccess.tree);
             pManager.AddCurveParameter("Polylines on heights", "PH", "Polylines on each height", GH_ParamAccess.tree);
-            pManager.AddLineParameter("Intersected facades", "PF", "Facades intersected by axis", GH_ParamAccess.tree);
+            pManager.AddLineParameter("Intersected facades A", "IA", "Facades intersected by axis on side A", GH_ParamAccess.tree);
+            pManager.AddLineParameter("Intersected facades B", "IB", "Facades intersected by axis on side B", GH_ParamAccess.tree);
             pManager.AddLineParameter("Lateral facades A", "FA", "Facades non intersected by axis and on its side A", GH_ParamAccess.tree);
             pManager.AddLineParameter("Lateral facades B", "FB", "Facades non intersected by axis and on its side B", GH_ParamAccess.tree);
         }
@@ -120,7 +121,8 @@ namespace Housefly.Program
             // create planes for each base curve
             GH_Structure<GH_Plane> floorsTree = new GH_Structure<GH_Plane>();
             GH_Structure<GH_Curve> curvesTree = new GH_Structure<GH_Curve>();
-            GH_Structure<GH_Line> intersectedFacadesTree = new GH_Structure<GH_Line>();
+            GH_Structure<GH_Line> intersectedFacadesTreeA = new GH_Structure<GH_Line>();
+            GH_Structure<GH_Line> intersectedFacadesTreeB = new GH_Structure<GH_Line>();
             GH_Structure<GH_Line> nonIntersectedFacadesTreeA = new GH_Structure<GH_Line>();
             GH_Structure<GH_Line> nonIntersectedFacadesTreeB = new GH_Structure<GH_Line>();
 
@@ -146,10 +148,13 @@ namespace Housefly.Program
                 floorsTree.Append(new GH_Plane(firstPlane), path);
 
                 // classify polyline segments to determine facades
-                List<Line> intersectedSegments = new List<Line>();
+                // NOTE: differentiating between intersectedSegment A and B may ve a bit overkill as generally the design process generates just two intersected lines
+                // if more than two lines are generated, unexpected results may occure 
+                List<Line> intersectedSegmentsA = new List<Line>();
+                List<Line> intersectedSegmentsB = new List<Line>();
                 List<Line> nonIntersectedSegmentsA = new List<Line>();
                 List<Line> nonIntersectedSegmentsB = new List<Line>();
-                if (!ClassifyPolylineSegmentsByIntersection(axis, polyline, out intersectedSegments, out nonIntersectedSegmentsA, out nonIntersectedSegmentsB))
+                if (!ClassifyPolylineSegmentsByIntersection(axis, polyline, out intersectedSegmentsA, out intersectedSegmentsB, out nonIntersectedSegmentsA, out nonIntersectedSegmentsB))
                 {
                     this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"Base curve on index {i} could not be classified.");
                 }
@@ -179,14 +184,22 @@ namespace Housefly.Program
                     polylineOnFloor.Transform(translation);
                     curvesTree.Append(new GH_Curve(polylineOnFloor.ToPolylineCurve()), heightsPath);
 
-                    List<GH_Line> lateralOnFloor = new List<GH_Line>();
+                    // TODO: the following variables can be removed and directly add the values to the final trees (values + path)
+                    List<GH_Line> lateralOnFloorA = new List<GH_Line>();
+                    List<GH_Line> lateralOnFloorB = new List<GH_Line>();
                     List<GH_Line> longitudinalOnFloorA = new List<GH_Line>();
                     List<GH_Line> longitudinalOnFloorB = new List<GH_Line>();
-                    for (int k = 0; k < intersectedSegments.Count; k++)
+                    for (int k = 0; k < intersectedSegmentsA.Count; k++)
                     {
-                        Line line = intersectedSegments[k];
+                        Line line = intersectedSegmentsA[k];
                         line.Transform(translation);
-                        lateralOnFloor.Add(new GH_Line(line));
+                        lateralOnFloorA.Add(new GH_Line(line));
+                    }
+                    for (int k = 0; k < intersectedSegmentsB.Count; k++)
+                    {
+                        Line line = intersectedSegmentsB[k];
+                        line.Transform(translation);
+                        lateralOnFloorB.Add(new GH_Line(line));
                     }
 
                     for (int k = 0; k < nonIntersectedSegmentsA.Count; k++)
@@ -202,7 +215,8 @@ namespace Housefly.Program
                         longitudinalOnFloorB.Add(new GH_Line(line));
                     }
 
-                    intersectedFacadesTree.AppendRange(lateralOnFloor, heightsPath);
+                    intersectedFacadesTreeA.AppendRange(lateralOnFloorA, heightsPath);
+                    intersectedFacadesTreeB.AppendRange(lateralOnFloorB, heightsPath);
                     nonIntersectedFacadesTreeA.AppendRange(longitudinalOnFloorA, heightsPath);
                     nonIntersectedFacadesTreeB.AppendRange(longitudinalOnFloorB, heightsPath);
 
@@ -219,19 +233,22 @@ namespace Housefly.Program
 
             DA.SetDataTree(0, floorsTree);
             DA.SetDataTree(1, curvesTree);
-            DA.SetDataTree(2, intersectedFacadesTree);
-            DA.SetDataTree(3, nonIntersectedFacadesTreeA);
-            DA.SetDataTree(4, nonIntersectedFacadesTreeB);
+            DA.SetDataTree(2, intersectedFacadesTreeA);
+            DA.SetDataTree(3, intersectedFacadesTreeB);
+            DA.SetDataTree(4, nonIntersectedFacadesTreeA);
+            DA.SetDataTree(5, nonIntersectedFacadesTreeB);
         }
 
         private bool ClassifyPolylineSegmentsByIntersection(
             Curve curve,
             Polyline polyline,
-            out List<Line> intersectedLines,
+            out List<Line> intersectedLinesA,
+            out List<Line> intersectedLinesB,
             out List<Line> nonIntersectedLinesA,
             out List<Line> nonIntersectedLinesB)
         {
-            intersectedLines = new List<Line>();
+            intersectedLinesA = new List<Line>();
+            intersectedLinesB = new List<Line>();
             nonIntersectedLinesA = new List<Line>();
             nonIntersectedLinesB = new List<Line>();
         
@@ -285,9 +302,14 @@ namespace Housefly.Program
                     }
                 }
         
-                if (hit)
+                if (hit && changeSide)
                 {
-                    intersectedLines.Add(line);
+                    intersectedLinesA.Add(line); // TODO: check if all on left side
+                    changeSide = !changeSide;
+                }
+                else if (hit && !changeSide) // TODO: replace by ternary operator ? 
+                {
+                    intersectedLinesB.Add(line); // TODO: check if all on right side
                     changeSide = !changeSide;
                 }
                 else if (changeSide)
