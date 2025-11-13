@@ -66,14 +66,25 @@ namespace Housefly.Program
 
             bool isValid = true;
 
+            if(!baseFacadeLine.IsValid)
+            {
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Base facade line is not valid.");
+                isValid = false;
+            }
+            if(baseFacadeLine.Direction.IsParallelTo(Vector3d.ZAxis))
+            {
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Base facade line cannot be parallel to Z axis.");
+                isValid = false;
+            }
+
             if (heightTreeA.PathCount != interiorTreeA.PathCount)
             {
-                AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Height and interior A trees have different branch counts: {heightTreeA.PathCount} vs {interiorTreeA.PathCount}.");
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Height and interior A trees have different branch counts: {heightTreeA.PathCount} vs {interiorTreeA.PathCount}.");
                 isValid = false;
             }
             if (heightTreeB.PathCount != interiorTreeB.PathCount)
             {
-                AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Height and interior B trees have different branch counts: {heightTreeB.PathCount} vs {interiorTreeB.PathCount}.");
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Height and interior B trees have different branch counts: {heightTreeB.PathCount} vs {interiorTreeB.PathCount}.");
                 isValid = false;
             }
 
@@ -85,7 +96,7 @@ namespace Housefly.Program
 
                 if (hCountA != iCountA)
                 {
-                    AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Branch {heightTreeA.Paths[i]} on A tree mismatch: {hCountA} heights vs {iCountA} interior flags.");
+                    this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Branch {heightTreeA.Paths[i]} on A tree mismatch: {hCountA} heights vs {iCountA} interior flags.");
                     isValid = false;
                 }
             }
@@ -98,7 +109,7 @@ namespace Housefly.Program
 
                 if (hCountB != iCountB)
                 {
-                    AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Branch {heightTreeB.Paths[i]} on B tree mismatch: {hCountB} heights vs {iCountB} interior flags.");
+                    this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Branch {heightTreeB.Paths[i]} on B tree mismatch: {hCountB} heights vs {iCountB} interior flags.");
                     isValid = false;
                 }
             }
@@ -115,6 +126,7 @@ namespace Housefly.Program
 
             GH_Structure<GH_Number> accumulatedHeightTreeA = this.CreateAccumulatedValueTree(heightTreeA);
             GH_Structure<GH_Number> accumulatedHeightTreeB = this.CreateAccumulatedValueTree(heightTreeB);
+
 
             // 2. mix and sort all accumulated heights
 
@@ -146,52 +158,91 @@ namespace Housefly.Program
             // List<GH_Path> sortedPaths  = allAccumulatedHeights.Select(tuple => tuple.path).ToList();
 
 
-            // 3. remove duplicated heights and keep all paths 
+            // 3. DO NOT remove duplicated heights and keep all paths
 
-            List<(double value, List<GH_Path> paths)> uniqueAccumulatedHeights = new List<(double value, List<GH_Path> paths)>(); // list of tuples; tuples of numbers and lists of GH_Path
-            
-            for (int i = 1; i < allAccumulatedHeights.Count; i++)
-            {
-                (double value, GH_Path path) prevTuple = allAccumulatedHeights[i - 1];
-                (double value, GH_Path path) currentTuple = allAccumulatedHeights[i];
+            // List<(double value, List<GH_Path> paths)> uniqueAccumulatedHeights = new List<(double value, List<GH_Path> paths)>(); // list of tuples; tuples of numbers and lists of GH_Path
+            // var firstTuple = allAccumulatedHeights[0];
+            // uniqueAccumulatedHeights.Add((firstTuple.value, new List<GH_Path>(){ firstTuple.path }));
+
+            // for (int i = 1; i < allAccumulatedHeights.Count; i++)
+            // {
+            //     double lastUniqueTupleValue = uniqueAccumulatedHeights[uniqueAccumulatedHeights.Count - 1].value;
+            //     (double value, GH_Path path) currentTuple = allAccumulatedHeights[i];
                 
-                if(currentTuple.value == prevTuple.value && uniqueAccumulatedHeights.Count != 0)
+            //     if(currentTuple.value == lastUniqueTupleValue)
+            //     {
+            //         // add new path to last unique tuple
+            //         uniqueAccumulatedHeights[uniqueAccumulatedHeights.Count - 1].paths.Add(currentTuple.path);
+            //         continue;
+            //     }
+
+            //     (double value, List<GH_Path> paths) newUniqueTuple = (currentTuple.value, new List<GH_Path>(){ currentTuple.path });
+            //     uniqueAccumulatedHeights.Add(newUniqueTuple);
+            // }
+
+
+            // 4. iterate resulting sorted height list: 
+            // on each height (either on A or B), find the height on the other tree (either A or B) that is the biggest on its tree but smaller than the iterated value. 
+
+            Vector3d perpDir = Vector3d.CrossProduct(baseFacadeLine.Direction, Vector3d.ZAxis); 
+            Vector3d opositePerpDir = -perpDir;
+
+            for (int i = 0; i < allAccumulatedHeights.Count; i++)
+            {
+                var currentTuple = allAccumulatedHeights[i];
+                var neighbourTuple? = null; 
+
+                for (int j = i + 1; j < allAccumulatedHeights.Count; j++)
                 {
-                    // add new path to previous unique tuple
-                    uniqueAccumulatedHeights[i - 1].paths.Add(currentTuple.path);
+                    var possibleNeighbour = allAccumulatedHeights[j];
+
+                    // TODO: ensure path is correct to be compared
+                    if(possibleNeighbour.value >= currentTuple && possibleNeighbour.path != currentTuple.path)
+                    {
+                        neighbourTuple = possibleNeighbour;
+                        break;
+                    }
+                }
+
+                if(!neighbourTuple)
+                {
+                    this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"Could not get neighbour tuple for index {i}.");
                     continue;
                 }
 
-                (double value, List<GH_Path> paths) uniqueTuple = (currentTuple.value, new List<GH_Path>(){ currentTuple.path })
-                uniqueAccumulatedHeights.Add(uniqueTuple);
-            }
+                // 5. compare both interior conditions (of A and B) and assign the translator vector according to interior condition:
+                // (int && int) || (ext && ext) = null 
+                // int && ext = -> 
+                // ext && int = <- 
 
-            // 4.iterate resulting sorted height list: on each height (either on A or B), find the height on the other tree (either A or B) that is the biggest on its tree but smaller than the iterated value. 
-
-            for (int i = 1; i < allAccumulatedHeights.Count; i++)
-            {
-                (double value, GH_Path path) prevTuple = allAccumulatedHeights[i - 1];
-                (double value, GH_Path path) currentTuple = allAccumulatedHeights[i];
-                
-                if(currentTuple.value == prevTuple.value && uniqueAccumulatedHeights.Count != 0)
+                if (currentTuple.IsInterior && neighbourTuple.IsInterior)
                 {
-                    // add new path to previous unique tuple
-                    uniqueAccumulatedHeights[i - 1].paths.Add(currentTuple.path);
-                    continue;
+                    // both interior: return to interior partitions (or not returned anything at all)
+
+                }
+                else if (!currentTuple.IsInterior && !neighbourTuple.IsInterior)
+                {
+                    // both exterior: return to exterior partitions (or not returned anything at all)
+                    
+                }
+                else if (!currentTuple.IsInterior && neighbourTuple.IsInterior)
+                {
+                    // interior - exterior: return vector 1
+                    
+                }
+                else // (currentTuple.IsInterior && neighbourTuple.IsInterior)
+                {
+                    // interior - exterior: return vector 2
+                    
                 }
 
-                (double value, List<GH_Path> paths) uniqueTuple = (currentTuple.value, new List<GH_Path>(){ currentTuple.path })
-                uniqueAccumulatedHeights.Add(uniqueTuple);
+
             }
 
 
 
-            // 5. compare both heights (of A and B) and assign the translator vector according to interior condition:
-            // (int && int) || (ext && ext) = null 
-            // int && ext = -> 
-            // ext && int = <- 
 
-            // 6. store vector on new tree
+            // 6. create new tree with vectors and heights ? 
 
 
 
