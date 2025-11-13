@@ -123,88 +123,73 @@ namespace Housefly.Program
             
 
             // 1. convert heights to "accumulated heights"
-
+            // NOTE: we are assuming that branches are ordered
+            // TODO: check for branching order ?
             GH_Structure<GH_Number> accumulatedHeightTreeA = this.CreateAccumulatedValueTree(heightTreeA);
             GH_Structure<GH_Number> accumulatedHeightTreeB = this.CreateAccumulatedValueTree(heightTreeB);
 
 
             // 2. mix and sort all accumulated heights
 
-            List<(double value, GH_Path path)> allAccumulatedHeights = new List<(double value, GH_Path path)>(); // list of tuples
+            List<Floor> allFloors = new List<Floor>();
 
-            // gather all numbers + paths from Tree A
-            foreach (var kv in accumulatedHeightTreeA.Paths.SelectMany(p => accumulatedHeightTreeA.get_Branch(p).Select(n => (n, p))))
+            // gather A data
+            foreach (var p in accumulatedHeightTreeA.Paths)
             {
-                GH_Number num = kv.n;
-                GH_Path path = kv.p;
-                if (num != null)
-                    allAccumulatedHeights.Add((num.Value, path));
+                var heights = accumulatedHeightTreeA.get_Branch(p);
+                var interiors = interiorTreeA.get_Branch(p);
+
+                for (int i = 0; i < heights.Count; i++)
+                {
+                    double h = heights[i].Value;
+                    bool isInterior = interiors[i].Value;
+                    allFloors.Add(new Floor(h, p, isInterior));
+                }
             }
 
-            // gather all numbers + paths from Tree B
-            foreach (var kv in accumulatedHeightTreeB.Paths.SelectMany(p => accumulatedHeightTreeB.get_Branch(p).Select(n => (n, p))))
+            // gather B data
+            foreach (var p in accumulatedHeightTreeB.Paths)
             {
-                GH_Number num = kv.n;
-                GH_Path path = kv.p;
-                if (num != null)
-                    allAccumulatedHeights.Add((num.Value, path));
+                var heights = accumulatedHeightTreeB.get_Branch(p);
+                var interiors = interiorTreeB.get_Branch(p);
+
+                for (int i = 0; i < heights.Count; i++)
+                {
+                    double h = heights[i].Value;
+                    bool isInterior = interiors[i].Value;
+                    allFloors.Add(new Floor(h, p, isInterior));
+                }
             }
 
             // sort by the numeric value
-            allAccumulatedHeights.Sort((a, b) => a.value.CompareTo(b.value));
-
-            // unpack into parallel lists
-            // List<double> sortedValues = allAccumulatedHeights.Select(tuple => tuple.value).ToList();
-            // List<GH_Path> sortedPaths  = allAccumulatedHeights.Select(tuple => tuple.path).ToList();
-
-
-            // 3. DO NOT remove duplicated heights and keep all paths
-
-            // List<(double value, List<GH_Path> paths)> uniqueAccumulatedHeights = new List<(double value, List<GH_Path> paths)>(); // list of tuples; tuples of numbers and lists of GH_Path
-            // var firstTuple = allAccumulatedHeights[0];
-            // uniqueAccumulatedHeights.Add((firstTuple.value, new List<GH_Path>(){ firstTuple.path }));
-
-            // for (int i = 1; i < allAccumulatedHeights.Count; i++)
-            // {
-            //     double lastUniqueTupleValue = uniqueAccumulatedHeights[uniqueAccumulatedHeights.Count - 1].value;
-            //     (double value, GH_Path path) currentTuple = allAccumulatedHeights[i];
-                
-            //     if(currentTuple.value == lastUniqueTupleValue)
-            //     {
-            //         // add new path to last unique tuple
-            //         uniqueAccumulatedHeights[uniqueAccumulatedHeights.Count - 1].paths.Add(currentTuple.path);
-            //         continue;
-            //     }
-
-            //     (double value, List<GH_Path> paths) newUniqueTuple = (currentTuple.value, new List<GH_Path>(){ currentTuple.path });
-            //     uniqueAccumulatedHeights.Add(newUniqueTuple);
-            // }
+            allFloors.Sort((a, b) => a.Value.CompareTo(b.Value));
 
 
             // 4. iterate resulting sorted height list: 
             // on each height (either on A or B), find the height on the other tree (either A or B) that is the biggest on its tree but smaller than the iterated value. 
 
-            Vector3d perpDir = Vector3d.CrossProduct(baseFacadeLine.Direction, Vector3d.ZAxis); 
+            Vector3d perpDir = Vector3d.CrossProduct(baseFacadeLine.Direction, Vector3d.ZAxis);
             Vector3d opositePerpDir = -perpDir;
 
-            for (int i = 0; i < allAccumulatedHeights.Count; i++)
+            for (int i = 0; i < allFloors.Count; i++)
             {
-                var currentTuple = allAccumulatedHeights[i];
-                var neighbourTuple? = null; 
+                Floor currentFloor = allFloors[i];
+                Floor neighbourFloor? = null; 
 
-                for (int j = i + 1; j < allAccumulatedHeights.Count; j++)
+                for (int j = i + 1; j < allFloors.Count; j++)
                 {
-                    var possibleNeighbour = allAccumulatedHeights[j];
+                    Floor candidate = allFloors[j];
 
+                    // find equal or next higher floor from the other tree
                     // TODO: ensure path is correct to be compared
-                    if(possibleNeighbour.value >= currentTuple && possibleNeighbour.path != currentTuple.path)
+                    if(candidate.Value >= currentFloor.Value && candidate.Path != currentFloor.Path)
                     {
-                        neighbourTuple = possibleNeighbour;
+                        neighbourFloor = candidate;
                         break;
                     }
                 }
 
-                if(!neighbourTuple)
+                if(!neighbourFloor)
                 {
                     this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"Could not get neighbour tuple for index {i}.");
                     continue;
@@ -215,27 +200,36 @@ namespace Housefly.Program
                 // int && ext = -> 
                 // ext && int = <- 
 
-                if (currentTuple.IsInterior && neighbourTuple.IsInterior)
+                Vector3d offsetVector = Vector3d.Unset;
+
+                if (currentFloor.IsInterior && neighbourFloor.IsInterior)
                 {
                     // both interior: return to interior partitions (or not returned anything at all)
-
+                    offsetVector = null;
                 }
-                else if (!currentTuple.IsInterior && !neighbourTuple.IsInterior)
+                else if (!currentFloor.IsInterior && !neighbourFloor.IsInterior)
                 {
                     // both exterior: return to exterior partitions (or not returned anything at all)
-                    
+                    offsetVector = null;
                 }
-                else if (!currentTuple.IsInterior && neighbourTuple.IsInterior)
+                else if (!currentFloor.IsInterior && neighbourFloor.IsInterior)
                 {
                     // interior - exterior: return vector 1
-                    
+                    // TODO: check correct orientation; what about the orientation of each line?
+                    // they will change the orientation, so we need a way to get absolute orientation
+                    // POSSIBLE SOLUTION: flip all lines with a guide
+                    offsetVector = perpDir;
                 }
-                else // (currentTuple.IsInterior && neighbourTuple.IsInterior)
+                else // (currentFloor.IsInterior && neighbourFloor.IsInterior)
                 {
-                    // interior - exterior: return vector 2
-                    
+                    // exterior - interior: return vector 2
+                    // TODO: check correct orientation; what about the orientation of each line?
+                    // they will change the orientation, so we need a way to get absolute orientation
+                    // POSSIBLE SOLUTION: flip all lines with a guide
+                    offsetVector = opositePerpDir;
                 }
 
+                currentFloor.Vector = offsetVector;
 
             }
 
@@ -248,6 +242,22 @@ namespace Housefly.Program
 
             DA.SetDataTree(0, lineTree);
             DA.SetDataTree(1, facadeHeightTree);
+        }
+
+        public struct Floor
+        {
+            public double Height;
+            public GH_Path Path;
+            public bool IsInterior;
+            public Vector3d Vector;
+
+            public Floor(double height, GH_Path path, bool isInterior, Vector3d vector = Vector3d.Unset)
+            {
+                Value = value;
+                Path = path;
+                IsInterior = isInterior;
+                Vector = vector;
+            }
         }
 
 
