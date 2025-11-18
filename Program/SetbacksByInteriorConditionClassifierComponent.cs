@@ -31,6 +31,7 @@ namespace Housefly.Program
             pManager.AddNumberParameter("Floor heights B", "HB", "Floor heights for spaces on B.", GH_ParamAccess.tree);
             pManager.AddBooleanParameter("Interior flags A", "IA", "Tree matching 'Floor heights A' indicating interior (true) or exterior (false) condition for each space.", GH_ParamAccess.tree);
             pManager.AddBooleanParameter("Interior flags B", "IB", "Tree matching 'Floor heights B' indicating interior (true) or exterior (false) condition for each space.", GH_ParamAccess.tree);
+            pManager.AddBooleanParameter("Upwards", "U", "Either the floors are upwards or downwards.", GH_ParamAccess.item, true);
         }
 
         /// <summary>
@@ -38,8 +39,10 @@ namespace Housefly.Program
         /// </summary>
         protected override void RegisterOutputParams(GH_Component.GH_OutputParamManager pManager)
         {
-            pManager.AddLineParameter("Bottom facade lines", "BFL", "Resulting bottom lines of facade portion", GH_ParamAccess.tree);
-            pManager.AddNumberParameter("Facade heights", "FH", "Resulting facade portion heights", GH_ParamAccess.tree);
+            pManager.AddLineParameter("Bottom facade lines A", "LA", "Resulting bottom lines of facade portion on A", GH_ParamAccess.tree);
+            pManager.AddLineParameter("Bottom facade lines B", "LB", "Resulting bottom lines of facade portion on B", GH_ParamAccess.tree);
+            pManager.AddNumberParameter("Facade heights A", "FHA", "Resulting facade portion heights on A", GH_ParamAccess.tree);
+            pManager.AddNumberParameter("Facade heights B", "FHB", "Resulting facade portion heights on B", GH_ParamAccess.tree);
         }
 
         /// <summary>
@@ -53,12 +56,14 @@ namespace Housefly.Program
             GH_Structure<GH_Number> heightTreeB = null;
             GH_Structure<GH_Boolean> interiorTreeA = null;
             GH_Structure<GH_Boolean> interiorTreeB = null;
+            bool upwards = true;
 
             if(!DA.GetData("Facade line", ref baseFacadeLine)) return;
             if(!DA.GetDataTree("Floor heights A", out heightTreeA)) return;
             if(!DA.GetDataTree("Floor heights B", out heightTreeB)) return;
             if(!DA.GetDataTree("Interior flags A", out interiorTreeA)) return;
             if(!DA.GetDataTree("Interior flags B", out interiorTreeB)) return;
+            DA.GetData("Upwards", ref upwards);
 
             // VALIDATION
 
@@ -126,6 +131,9 @@ namespace Housefly.Program
             GH_Structure<GH_Number> accumulatedHeightTreeA = this.CreateAccumulatedValueTree(heightTreeA);
             GH_Structure<GH_Number> accumulatedHeightTreeB = this.CreateAccumulatedValueTree(heightTreeB);
 
+            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, $"test 1.A: {accumulatedHeightTreeA.PathCount} - {accumulatedHeightTreeB.PathCount}");
+
+
 
             // 2. mix and sort all accumulated heights
 
@@ -143,7 +151,7 @@ namespace Housefly.Program
                     double h = (heights[i] as GH_Number).Value;
                     double ah = (accumulatedHeights[i] as GH_Number).Value;
                     bool isInterior = (interiors[i] as GH_Boolean).Value;
-                    allFloors.Add(new Floor(ah, h, p, i, isInterior));
+                    allFloors.Add(new Floor(h, ah, p, 0, isInterior)); // hardcoded index as new path representing Tree A
                 }
             }
 
@@ -159,12 +167,18 @@ namespace Housefly.Program
                     double h = (heights[i] as GH_Number).Value;
                     double ah = (accumulatedHeights[i] as GH_Number).Value;
                     bool isInterior = (interiors[i] as GH_Boolean).Value;
-                    allFloors.Add(new Floor(ah, h, p, i, isInterior));
+                    allFloors.Add(new Floor(h, ah, p, 1, isInterior)); // hardcoded index as new path representing Tree B
                 }
             }
 
-            // sort by the numeric value
-            allFloors.Sort((a, b) => a.Height.CompareTo(b.Height));
+            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, $"test 2: {allFloors.Count}");
+
+
+            // sort by absolute aacumulated height value
+            // NOTE: if there are possitive and negative values it will generate unexpected results
+            allFloors.Sort((a, b) => Math.Abs(a.AccumulatedHeight).CompareTo(Math.Abs(b.AccumulatedHeight)));
+            
+
 
 
             // 4. iterate resulting sorted height list: 
@@ -174,17 +188,20 @@ namespace Housefly.Program
             perpDir.Unitize();
             Vector3d opositePerpDir = -perpDir;
 
-            GH_Structure<GH_Line> facadePortionBottomLines = new GH_Structure<GH_Line>();
-            GH_Structure<GH_Number> facadePortionHeights = new GH_Structure<GH_Number>();
+            GH_Structure<GH_Line> facadePortionBottomLinesA = new GH_Structure<GH_Line>();
+            GH_Structure<GH_Line> facadePortionBottomLinesB = new GH_Structure<GH_Line>();
+            GH_Structure<GH_Number> facadePortionHeightsA = new GH_Structure<GH_Number>();
+            GH_Structure<GH_Number> facadePortionHeightsB = new GH_Structure<GH_Number>();
 
             for (int i = 0; i < allFloors.Count; i++)
             {
                 // TODO: Fix loop for last element
 
+
                 Floor currentFloor = allFloors[i];
                 bool neighbourFound = false;
 
-                for (int j = i + 1; j < allFloors.Count; j++)
+                for (int j = 0; j < allFloors.Count; j++)
                 {
                     Floor candidate = allFloors[j];
 
@@ -193,7 +210,8 @@ namespace Housefly.Program
                     // do i just simply compare path or should i just extract a certain branch index ?
                     // ({0;1} == {0;2}) would result true or false ?  
                     // way of comparing paths ? GH_Path.Inequality(candidate.Path, currentFloor.Path)
-                    if(candidate.Height >= currentFloor.Height && candidate.Path != currentFloor.Path)
+
+                    if (Math.Abs(candidate.AccumulatedHeight) >= Math.Abs(currentFloor.AccumulatedHeight) && candidate.Path != currentFloor.Path)
                     {
 
                         // 5. compare both interior conditions (of A and B) and assign the translator vector according to interior condition:
@@ -207,6 +225,7 @@ namespace Housefly.Program
                             // TODO: check correct orientation; what about the orientation of each line?
                             // they will change the orientation, so we need a way to get absolute orientation
                             // POSSIBLE SOLUTION: flip all lines with a guide
+                            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "different interior and exterior 1");
                             currentFloor.SetbackVector = perpDir;
                         }
                         else if (currentFloor.IsInterior && !candidate.IsInterior) // return vector 2
@@ -214,11 +233,14 @@ namespace Housefly.Program
                             // TODO: check correct orientation; what about the orientation of each line?
                             // they will change the orientation, so we need a way to get absolute orientation
                             // POSSIBLE SOLUTION: flip all lines with a guide
+                            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "different interior and exterior 2");
                             currentFloor.SetbackVector = opositePerpDir;
                         }
                         else // (currentFloor.IsInterior && candidate.IsInterior) && (!currentFloor.IsInterior && !candidate.IsInterior)
                         {
                             // both interior or both exterior: return to interior or exterior partitions (or not returned anything at all)
+                            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "same interior and interior or exterior and exterior");
+                            currentFloor.SetbackVector = Vector3d.Zero;
                         }
 
                         neighbourFound = true;
@@ -229,6 +251,7 @@ namespace Housefly.Program
                 if(!neighbourFound)
                 {
                     this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"Could not get neighbour Floor for index {i}.");
+                    currentFloor.SetbackVector = Vector3d.Zero; // provisional
                     continue;
                 }
                 
@@ -236,6 +259,9 @@ namespace Housefly.Program
                 // 7. create lines and vectors for facade setbacks
 
                 double previousAccumulatedHeight = i == 0 ? 0 : allFloors[i - 1].AccumulatedHeight;
+
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"test 5 : iteration {i} - {currentFloor.ToString()}.");
+
 
                 Line bottomLine = baseFacadeLine;
                 bottomLine.To = bottomLine.To + currentFloor.SetbackVector + (Vector3d.ZAxis * previousAccumulatedHeight);
@@ -246,17 +272,25 @@ namespace Housefly.Program
                 //topLine.From =topLine.From + currentFloor.Vector + (Vector3d.ZAxis * currentFloor.AccumulatedHeight);
 
                 GH_Number facadePortionHeight = new GH_Number(currentFloor.AccumulatedHeight - previousAccumulatedHeight);
+                GH_Path path = currentFloor.Path;
 
-
-                facadePortionBottomLines.Append(new GH_Line(bottomLine), currentFloor.Path);
-                facadePortionHeights.Append(facadePortionHeight, currentFloor.Path);
-
-
+                if (currentFloor.Index == 0)
+                {
+                    facadePortionBottomLinesA.Append(new GH_Line(bottomLine), path);
+                    facadePortionHeightsA.Append(facadePortionHeight, path);
+                }
+                else
+                {
+                    facadePortionBottomLinesB.Append(new GH_Line(bottomLine), path);
+                    facadePortionHeightsB.Append(facadePortionHeight, path);
+                }
             }
 
 
-            DA.SetDataTree(0, facadePortionBottomLines);
-            DA.SetDataTree(1, facadePortionHeights);
+            DA.SetDataTree(0, facadePortionBottomLinesA);
+            DA.SetDataTree(1, facadePortionBottomLinesB);
+            DA.SetDataTree(2, facadePortionHeightsA);
+            DA.SetDataTree(3, facadePortionHeightsB);
         }
 
         public struct Floor
@@ -277,6 +311,11 @@ namespace Housefly.Program
                 this.IsInterior = isInterior;
                 this.SetbackVector = setbackVector;
             }
+
+            override public string ToString()
+            {
+                return $"Height: {this.Height} | AccumulatedHeight: {this.AccumulatedHeight} | Path: {this.Path} | Index: {this.Index} | SetbackVector: {this.SetbackVector.ToString()}";
+            }
         }
 
 
@@ -285,22 +324,20 @@ namespace Housefly.Program
             GH_Structure<GH_Number> accumulatedTree = new GH_Structure<GH_Number>();
             double accumulatedHeight = 0;
 
-            for (int i = 0; i < tree.Branches.Count; i++)
+            for (int i = 0; i < tree.Paths.Count; i++)
             {
                 GH_Path path = tree.Paths[i];
                 List<GH_Number> numbers = tree.get_Branch(path) as List<GH_Number>;
                 
                 if(numbers.Count != 1)
-                {
                     this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"List on branch with path {path} has {numbers.Count} elements and it must have one.");
-                } 
 
                 accumulatedHeight += numbers[0].Value;
                 accumulatedTree.Append(new GH_Number(accumulatedHeight), path);
             }
-            
+
             return accumulatedTree;
-        } 
+        }
         
 
 
