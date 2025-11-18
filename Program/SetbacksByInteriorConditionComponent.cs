@@ -9,13 +9,13 @@ using System.Linq;
 
 namespace Housefly.Program
 {
-    public class SetbacksByInteriorConditionClassifierComponent : GH_Component
+    public class SetbacksByInteriorConditionComponent : GH_Component
     {
         /// <summary>
-        /// Initializes a new instance of the SetbacksByInteriorConditionClassifierComponent class.
+        /// Initializes a new instance of the SetbacksByInteriorConditionComponent class.
         /// </summary>
-        public SetbacksByInteriorConditionClassifierComponent()
-          : base("SetbacksByInteriorConditionClassifierComponent", "SetbacksByInteriorConditionClassifier",
+        public SetbacksByInteriorConditionComponent()
+          : base("SetbacksByInteriorConditionComponent", "SetbacksByInteriorCondition",
               "Moves a base line representing a facade to fit the interior or exterior conditions of the building spaces and according to its heights.",
               "Housefly", "Program")
         {
