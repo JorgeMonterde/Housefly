@@ -26,11 +26,9 @@ namespace Housefly.Program
         /// </summary>
         protected override void RegisterInputParams(GH_Component.GH_InputParamManager pManager)
         {
-            pManager.AddLineParameter("Facade line", "FL", "Base line representing a facade on plan.", GH_ParamAccess.item);
-            pManager.AddNumberParameter("Floor heights A", "HA", "Floor heights for spaces on A.", GH_ParamAccess.list);
-            pManager.AddNumberParameter("Floor heights B", "HB", "Floor heights for spaces on B.", GH_ParamAccess.list);
-            pManager.AddBooleanParameter("Interior flags A", "IA", "List matching 'Floor heights A' indicating interior (true) or exterior (false) condition for each space.", GH_ParamAccess.list);
-            pManager.AddBooleanParameter("Interior flags B", "IB", "List matching 'Floor heights B' indicating interior (true) or exterior (false) condition for each space.", GH_ParamAccess.list);
+            pManager.AddLineParameter("Facade lines", "L", "Base lines representing possible facades on plan.", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Floor heights", "H", "Floor heights for spaces.", GH_ParamAccess.tree);
+            pManager.AddBooleanParameter("Interior flags", "I", "Tree matching 'Floor heights' indicating interior (true) or exterior (false) condition for each space.", GH_ParamAccess.tree);
         }
 
         /// <summary>
@@ -38,10 +36,9 @@ namespace Housefly.Program
         /// </summary>
         protected override void RegisterOutputParams(GH_Component.GH_OutputParamManager pManager)
         {
-            pManager.AddLineParameter("Bottom facade lines A", "LA", "Resulting bottom lines of facade portion on A", GH_ParamAccess.list);
-            pManager.AddLineParameter("Bottom facade lines B", "LB", "Resulting bottom lines of facade portion on B", GH_ParamAccess.list);
-            pManager.AddNumberParameter("Facade heights A", "FHA", "Resulting facade portion heights on A", GH_ParamAccess.list);
-            pManager.AddNumberParameter("Facade heights B", "FHB", "Resulting facade portion heights on B", GH_ParamAccess.list);
+            pManager.AddLineParameter("Facade setback lines", "L", "Resulting facade setback lines for each input facade line", GH_ParamAccess.tree);
+            pManager.AddVectorParameter("Setback vectors", "V", "Resulting setback unitized vectors for each 'Facade setback line'", GH_ParamAccess.tree);
+            pManager.AddNumberParameter("Facade setback heights ", "H", "Resulting facade setback heights for each 'Facade setback line'", GH_ParamAccess.tree);
         }
 
         /// <summary>
@@ -50,196 +47,123 @@ namespace Housefly.Program
         /// <param name="DA">The DA object is used to retrieve from inputs and store in outputs.</param>
         protected override void SolveInstance(IGH_DataAccess DA)
         {
-            Line baseFacadeLine = Line.Unset;
-            List<double> heightsA = new List<double> ();
-            List<double> heightsB = new List<double> ();
-            List<bool> interiorsA = new List<bool> ();
-            List<bool> interiorsB = new List<bool> ();
+            // get all inputs
 
-            if(!DA.GetData("Facade line", ref baseFacadeLine)) return;
-            if(!DA.GetDataList("Floor heights A", heightsA)) return;
-            if(!DA.GetDataList("Floor heights B", heightsB)) return;
-            if(!DA.GetDataList("Interior flags A", interiorsA)) return;
-            if(!DA.GetDataList("Interior flags B", interiorsB)) return;
+            List<Line> lines = new List<Line>();
+            GH_Structure<GH_Number> heightsTree = null;
+            GH_Structure<GH_Boolean> interiorsTree = null;
 
-            // VALIDATION
+            if(!DA.GetDataList("Facade lines", lines)) return;
+            if(!DA.GetDataTree("Floor heights", out heightsTree)) return;
+            if(!DA.GetDataTree("Interior flags", out interiorsTree)) return;
 
-            bool isValid = true;
+            // validate
 
-            if(!baseFacadeLine.IsValid)
+            if (heightsTree.PathCount != interiorsTree.PathCount)
             {
-                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Base facade line is not valid.");
-                isValid = false;
-            }
-            if(baseFacadeLine.Direction.IsParallelTo(Vector3d.ZAxis) != 0)
-            {
-                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Base facade line cannot be parallel to Z axis.");
-                isValid = false;
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Heights and interiors trees have different branch counts: {heightsTree.PathCount} vs {interiorsTree.PathCount}.");
+                return;
             }
 
-            if (heightsA.Count!= interiorsA.Count)
+            if (lines.Count - heightsTree.PathCount != 1) // info for all spaces between each two lines must be provided
             {
-                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Height and interior A lists have different lengths: {heightsA.Count} vs {interiorsA.Count}.");
-                isValid = false;
-            }
-            if (heightsB.Count!= interiorsB.Count)
-            {
-                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Height and interior B lists have different lengths: {heightsB.Count} vs {interiorsB.Count}.");
-                isValid = false;
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Lines count minus heights branches count must be equal 1: {lines.Count} - {heightsTree.PathCount} != 1.");
+                return;
             }
 
-            if (!isValid) return;
-            
+            // iterate lines
 
+            GH_Structure<GH_Line> facadeSetbackLinesTree = new GH_Structure<GH_Line>();
+            GH_Structure<GH_Vector> setbackVectorsTree = new GH_Structure<GH_Vector>();
+            GH_Structure<GH_Number> facadeSetbackHeightsTree = new GH_Structure<GH_Number>();
 
-            // LOGIC
-
-            
-
-            // 1. convert heights to "cumulated heights"
-            // NOTE: we are assuming lists are ordered
-            // TODO: check for list order ?
-            List<double> cumulatedHeightsA = this.CreateCumulativeList(heightsA);
-            List<double> cumulatedHeightsB = this.CreateCumulativeList(heightsB);
-
-            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, $"test 1.A: {cumulatedHeightsA.Count} - {cumulatedHeightsB.Count}");
-
-
-
-            // 2. mix and sort all cumulated heights
-
-            List<Floor> allFloors = new List<Floor>();
-
-            // gather A data
-            for (int i = 0; i < heightsA.Count; i++)
+            for (int i = 0; i < lines.Count; i++)
             {
-                allFloors.Add(new Floor(heightsA[i], cumulatedHeightsA[i], "A", interiorsA[i]));
-            }
+                int hCount = (i == 0)
+                    ? heightsTree.Branches[0].Count
+                    : (i == lines.Count - 1)
+                    ? heightsTree.Branches[i - 1].Count
+                    : heightsTree.Branches[i].Count;
 
-            // gather B data
-            for (int i = 0; i < heightsB.Count; i++)
-            {
-                allFloors.Add(new Floor(heightsB[i], cumulatedHeightsB[i], "B", interiorsB[i]));
-            }
-
-            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, $"test 2: {allFloors.Count}");
-
-
-            // sort by absolute cumulated heights
-            // NOTE: if there are possitive and negative values it will generate unexpected results
-            allFloors.Sort((a, b) => Math.Abs(a.AccumulatedHeight).CompareTo(Math.Abs(b.AccumulatedHeight)));
-            
-
-            // 4. iterate resulting sorted height list: 
-            // on each height (either on A or B), find the height on the other list (either A or B) that is the biggest on its list but smaller than the iterated value.
-
-            // A vectors
-            Vector3d perpDir = Vector3d.CrossProduct(baseFacadeLine.Direction, Vector3d.ZAxis);
-            perpDir.Unitize();
-            Vector3d opositePerpDir = -perpDir;
-
-            // B vectors
+                int iCount = (i == 0)
+                    ? interiorsTree.Branches[0].Count
+                    : (i == lines.Count - 1)
+                    ? interiorsTree.Branches[i - 1].Count
+                    : interiorsTree.Branches[i].Count;
 
 
-            List<Line> facadePortionBottomLinesA = new List<Line>();
-            List<Line> facadePortionBottomLinesB = new List<Line>();
-            List<double> facadePortionHeightsA = new List<double>();
-            List<double> facadePortionHeightsB = new List<double>();
-
-            for (int i = 0; i < allFloors.Count; i++)
-            {
-                // TODO: Fix loop for last element
-
-                Floor currentFloor = allFloors[i];
-                bool neighbourFound = false;
-
-                for (int j = 0; j < allFloors.Count; j++)
+                if (hCount != iCount)
                 {
-                    Floor candidate = allFloors[j];
-
-                    // find equal or next higher floor from the other list
-                    if (Math.Abs(candidate.AccumulatedHeight) >= Math.Abs(currentFloor.AccumulatedHeight) && candidate.ListIdentifier != currentFloor.ListIdentifier)
-                    {
-                        // 5. compare both interior conditions (of A and B) and assign the translator vector according to interior condition:
-                        // (int && int) || (ext && ext) = null 
-                        // int && ext = -> 
-                        // ext && int = <- 
-
-                        if (!currentFloor.IsInterior && candidate.IsInterior) // return vector 1
-                        {
-                            // TODO: check correct orientation; what about the orientation of each line?
-                            // they will change the orientation, so we need a way to get absolute orientation
-                            // POSSIBLE SOLUTION: flip all lines with a guide
-                            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "different interior and exterior 1");
-                            currentFloor.SetbackVector = currentFloor.ListIdentifier == "A" ? perpDir : -perpDir;
-                        }
-                        else if (currentFloor.IsInterior && !candidate.IsInterior) // return vector 2
-                        {
-                            // TODO: check correct orientation; what about the orientation of each line?
-                            // they will change the orientation, so we need a way to get absolute orientation
-                            // POSSIBLE SOLUTION: flip all lines with a guide
-                            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "different interior and exterior 2");
-                            currentFloor.SetbackVector = currentFloor.ListIdentifier == "A" ? opositePerpDir : -opositePerpDir;
-
-                        }
-                        else // (currentFloor.IsInterior && candidate.IsInterior) && (!currentFloor.IsInterior && !candidate.IsInterior)
-                        {
-                            // both interior or both exterior: return to interior or exterior partitions (or not returned anything at all)
-                            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "same interior and interior or exterior and exterior");
-                            currentFloor.SetbackVector = Vector3d.Zero;
-                        }
-
-                        neighbourFound = true;
-                        break;
-                    }
+                    this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Branch {heightsTree.Paths[i]} on trees mismatch: {hCount} heights vs {iCount} interior flags.");
+                    continue; // skip iteration
                 }
 
-                if(!neighbourFound)
-                {
-                    this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"Could not get neighbour Floor for index {i}.");
+                List<double> heightsA = new List<double>();
+                List<double> heightsB = new List<double>();
+                List<bool> interiorsA = new List<bool>();
+                List<bool> interiorsB = new List<bool>();
 
-                    if(currentFloor.IsInterior)
-                    {
-                        this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "Current is interior.");
-                        currentFloor.SetbackVector = currentFloor.ListIdentifier == "A" ? opositePerpDir : -opositePerpDir;
-                    }
-                    else
-                    {
-                        this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, "Current is exterior: no reason for facade");
-                        // currentFloor.SetbackVector = Vector3d.Zero;
-                        continue; // skip floor as it does not need facade
-                    }
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"Loop {i}.");
+
+
+                if (i == 0)
+                {
+                    var heightsFirstBranch = heightsTree.get_Branch(heightsTree.Paths[i]);
+                    var interiorsFirstBranch = interiorsTree.get_Branch(interiorsTree.Paths[i]);
+
+                    foreach (var item in heightsFirstBranch) heightsB.Add((item as GH_Number).Value);
+                    foreach (var item in interiorsFirstBranch) interiorsB.Add((item as GH_Boolean).Value);
+
+                    List<double> cumulatedHeights = this.CreateCumulativeList(heightsB);
+                    cumulatedHeights.Sort((a, b) => Math.Abs(a).CompareTo(Math.Abs(b)));
+                    double auxHeight = cumulatedHeights[cumulatedHeights.Count - 1]; // get highest absolute value
+
+                    // just one big floor with external spaces to represent outer space
+                    heightsA = new List<double>() { auxHeight };
+                    interiorsA = new List<bool>() { false };
                 }
-
-                
-                // 7. create lines and vectors for facade setbacks
-
-                double previousCumulatedHeight = i == 0 ? 0 : allFloors[i - 1].AccumulatedHeight;
-
-                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"test 5 : iteration {i} - {currentFloor.ToString()}.");
-
-                Line bottomLine = baseFacadeLine;
-                bottomLine.To = bottomLine.To + currentFloor.SetbackVector + (Vector3d.ZAxis * previousCumulatedHeight);
-                bottomLine.From = bottomLine.From + currentFloor.SetbackVector + (Vector3d.ZAxis * previousCumulatedHeight);
-
-                double facadePortionHeight = currentFloor.AccumulatedHeight - previousCumulatedHeight;
-
-                if (currentFloor.ListIdentifier == "A")
+                else if (i == lines.Count - 1)
                 {
-                    facadePortionBottomLinesA.Add(bottomLine);
-                    facadePortionHeightsA.Add(facadePortionHeight);
+                    var heightsLastBranch = heightsTree.get_Branch(heightsTree.Paths[i - 1]);
+                    var interiorsLastBranch = interiorsTree.get_Branch(interiorsTree.Paths[i - 1]);
+
+                    foreach (var item in heightsLastBranch) heightsA.Add((item as GH_Number).Value);
+                    foreach (var item in interiorsLastBranch) interiorsA.Add((item as GH_Boolean).Value);
+
+                    List<double> cumulatedHeights = this.CreateCumulativeList(heightsA);
+                    cumulatedHeights.Sort((a, b) => Math.Abs(a).CompareTo(Math.Abs(b)));
+                    double auxHeight = cumulatedHeights[cumulatedHeights.Count - 1]; // get highest absolute value
+
+                    // just one big floor with external spaces to represent outer space
+                    heightsB = new List<double>() { auxHeight };
+                    interiorsB = new List<bool>() { false };
                 }
                 else
                 {
-                    facadePortionBottomLinesB.Add(bottomLine);
-                    facadePortionHeightsB.Add(facadePortionHeight);
+                    GH_Path pathA = heightsTree.Paths[i - 1];
+                    GH_Path pathB = heightsTree.Paths[i];
+
+                    foreach (var item in heightsTree.get_Branch(pathA)) heightsA.Add((item as GH_Number).Value);
+                    foreach (var item in interiorsTree.get_Branch(pathA)) interiorsA.Add((item as GH_Boolean).Value);
+
+                    foreach (var item in heightsTree.get_Branch(pathB)) heightsB.Add((item as GH_Number).Value);
+                    foreach (var item in interiorsTree.get_Branch(pathB)) interiorsB.Add((item as GH_Boolean).Value);
+
                 }
+
+                Line line = lines[i];
+                var ( facadePortionLines, setbackVectors, facadePortionHeights ) = this.CreateSetbacks(line, heightsA, heightsB, interiorsA, interiorsB);
+
+                GH_Path newPath = new GH_Path(i);
+                facadeSetbackLinesTree.AppendRange(facadePortionLines, newPath);
+                setbackVectorsTree.AppendRange(setbackVectors, newPath);
+                facadeSetbackHeightsTree.AppendRange(facadePortionHeights, newPath);
             }
 
-            DA.SetDataList(0, facadePortionBottomLinesA);
-            DA.SetDataList(1, facadePortionBottomLinesB);
-            DA.SetDataList(2, facadePortionHeightsA);
-            DA.SetDataList(3, facadePortionHeightsB);
+
+            DA.SetDataTree(0, facadeSetbackLinesTree);
+            DA.SetDataTree(1, setbackVectorsTree);
+            DA.SetDataTree(2, facadeSetbackHeightsTree);
         }
 
         public struct Floor
@@ -278,6 +202,164 @@ namespace Housefly.Program
             }
 
             return cumulativeList;
+        }
+
+        private (List<GH_Line> facadePortionLines, List<GH_Vector> setbackVectors, List<GH_Number> facadePortionHeights) CreateSetbacks(
+            Line baseFacadeLine,
+            List<double> heightsA,
+            List<double> heightsB,
+            List<bool> interiorsA,
+            List<bool> interiorsB)
+        {
+
+            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "CreateSetbacks running...");
+
+
+            // VALIDATION
+
+            bool isValid = true;
+
+            if(!baseFacadeLine.IsValid)
+            {
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Base facade line is not valid.");
+                isValid = false;
+            }
+            if(baseFacadeLine.Direction.IsParallelTo(Vector3d.ZAxis) != 0)
+            {
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, "Base facade line cannot be parallel to Z axis.");
+                isValid = false;
+            }
+
+            if (heightsA.Count!= interiorsA.Count)
+            {
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Height and interior A lists have different lengths: {heightsA.Count} vs {interiorsA.Count}.");
+                isValid = false;
+            }
+            if (heightsB.Count!= interiorsB.Count)
+            {
+                this.AddRuntimeMessage(GH_RuntimeMessageLevel.Error, $"Height and interior B lists have different lengths: {heightsB.Count} vs {interiorsB.Count}.");
+                isValid = false;
+            }
+
+            if (!isValid) return (new List<GH_Line>(), new List<GH_Vector>(), new List<GH_Number>());
+            
+            // LOGIC
+
+            // 1. convert heights to "cumulated heights"
+
+            List<double> cumulatedHeightsA = this.CreateCumulativeList(heightsA);
+            List<double> cumulatedHeightsB = this.CreateCumulativeList(heightsB);
+
+            // 2. mix and sort all cumulated heights
+
+            List<Floor> allFloors = new List<Floor>();
+
+            // gather A data
+            for (int i = 0; i < heightsA.Count; i++)
+            {
+                allFloors.Add(new Floor(heightsA[i], cumulatedHeightsA[i], "A", interiorsA[i]));
+            }
+
+            // gather B data
+            for (int i = 0; i < heightsB.Count; i++)
+            {
+                allFloors.Add(new Floor(heightsB[i], cumulatedHeightsB[i], "B", interiorsB[i]));
+            }
+
+            // sort by absolute cumulated heights
+            // NOTE: if there are possitive and negative values it will generate unexpected results
+            allFloors.Sort((a, b) => Math.Abs(a.AccumulatedHeight).CompareTo(Math.Abs(b.AccumulatedHeight)));
+            
+
+            // 4. iterate resulting sorted height list: 
+            // on each height (either on A or B), find the height on the other list (either A or B) that is the biggest on its list but smaller than the iterated value.
+
+            Vector3d perpDir = Vector3d.CrossProduct(baseFacadeLine.Direction, Vector3d.ZAxis);
+            perpDir.Unitize();
+            Vector3d opositePerpDir = -perpDir;
+
+            List<GH_Line> facadePortionLines = new List<GH_Line>();
+            List<GH_Vector> setbackVectors = new List<GH_Vector>();
+            List<GH_Number> facadePortionHeights = new List<GH_Number>();
+
+            for (int i = 0; i < allFloors.Count; i++)
+            {
+                Floor currentFloor = allFloors[i];
+                bool neighbourFound = false;
+
+                for (int j = 0; j < allFloors.Count; j++)
+                {
+                    Floor candidate = allFloors[j];
+
+                    // find equal or next higher floor from the other list
+                    if (Math.Abs(candidate.AccumulatedHeight) >= Math.Abs(currentFloor.AccumulatedHeight) && candidate.ListIdentifier != currentFloor.ListIdentifier)
+                    {
+                        // 5. compare both interior conditions (of A and B) and assign the translator vector according to interior condition:
+                        // (int && int) || (ext && ext) = null 
+                        // int && ext = -> 
+                        // ext && int = <- 
+
+                        if (!currentFloor.IsInterior && candidate.IsInterior) // return vector 1
+                        {
+                            // TODO: check correct orientation; what about the orientation of each line?
+                            // they will change the orientation, so we need a way to get absolute orientation
+                            // POSSIBLE SOLUTION: flip all lines with a guide
+                            currentFloor.SetbackVector = currentFloor.ListIdentifier == "A" ? perpDir : -perpDir;
+                        }
+                        else if (currentFloor.IsInterior && !candidate.IsInterior) // return vector 2
+                        {
+                            // TODO: check correct orientation; what about the orientation of each line?
+                            // they will change the orientation, so we need a way to get absolute orientation
+                            // POSSIBLE SOLUTION: flip all lines with a guide
+                            currentFloor.SetbackVector = currentFloor.ListIdentifier == "A" ? opositePerpDir : -opositePerpDir;
+
+                        }
+                        else // (currentFloor.IsInterior && candidate.IsInterior) && (!currentFloor.IsInterior && !candidate.IsInterior)
+                        {
+                            // both interior or both exterior: return to interior or exterior partitions (or not returned anything at all)
+                            currentFloor.SetbackVector = Vector3d.Zero;
+                        }
+
+                        neighbourFound = true;
+                        break;
+                    }
+                }
+
+                if(!neighbourFound)
+                {
+                    this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"Could not get neighbour Floor for index {i}.");
+
+                    if(currentFloor.IsInterior)
+                    {
+                        this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "Current is interior.");
+                        currentFloor.SetbackVector = currentFloor.ListIdentifier == "A" ? opositePerpDir : -opositePerpDir;
+                    }
+                    else
+                    {
+                        this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "Current is exterior: no reason for facade");
+                        // currentFloor.SetbackVector = Vector3d.Zero;
+                        continue; // skip floor as it does not need facade
+                    }
+                }
+
+                
+                // 7. create lines and vectors for facade setbacks
+
+                double previousCumulatedHeight = i == 0 ? 0 : allFloors[i - 1].AccumulatedHeight;
+
+                Line bottomLine = baseFacadeLine;
+                bottomLine.To = bottomLine.To + (Vector3d.ZAxis * previousCumulatedHeight);
+                bottomLine.From = bottomLine.From + (Vector3d.ZAxis * previousCumulatedHeight);
+
+                double facadePortionHeight = currentFloor.AccumulatedHeight - previousCumulatedHeight;
+
+                facadePortionLines.Add(new GH_Line(bottomLine));
+                setbackVectors.Add(new GH_Vector(currentFloor.SetbackVector));
+                facadePortionHeights.Add(new GH_Number(facadePortionHeight));
+            }
+
+
+            return ( facadePortionLines, setbackVectors, facadePortionHeights);
         }
         
 
