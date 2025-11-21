@@ -105,11 +105,15 @@ namespace Housefly.Program
 
                 this.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, $"Loop {i}.");
 
+                GH_Path pathA = null;
+                GH_Path pathB = null;
 
                 if (i == 0)
                 {
-                    var heightsFirstBranch = heightsTree.get_Branch(heightsTree.Paths[i]);
-                    var interiorsFirstBranch = interiorsTree.get_Branch(interiorsTree.Paths[i]);
+                    pathB = heightsTree.Paths[i];
+
+                    var heightsFirstBranch = heightsTree.get_Branch(pathB);
+                    var interiorsFirstBranch = interiorsTree.get_Branch(pathB);
 
                     foreach (var item in heightsFirstBranch) heightsB.Add((item as GH_Number).Value);
                     foreach (var item in interiorsFirstBranch) interiorsB.Add((item as GH_Boolean).Value);
@@ -124,8 +128,10 @@ namespace Housefly.Program
                 }
                 else if (i == lines.Count - 1)
                 {
-                    var heightsLastBranch = heightsTree.get_Branch(heightsTree.Paths[i - 1]);
-                    var interiorsLastBranch = interiorsTree.get_Branch(interiorsTree.Paths[i - 1]);
+                    pathA = heightsTree.Paths[i - 1];
+
+                    var heightsLastBranch = heightsTree.get_Branch(pathA);
+                    var interiorsLastBranch = interiorsTree.get_Branch(pathA);
 
                     foreach (var item in heightsLastBranch) heightsA.Add((item as GH_Number).Value);
                     foreach (var item in interiorsLastBranch) interiorsA.Add((item as GH_Boolean).Value);
@@ -140,8 +146,8 @@ namespace Housefly.Program
                 }
                 else
                 {
-                    GH_Path pathA = heightsTree.Paths[i - 1];
-                    GH_Path pathB = heightsTree.Paths[i];
+                    pathA = heightsTree.Paths[i - 1];
+                    pathB = heightsTree.Paths[i];
 
                     foreach (var item in heightsTree.get_Branch(pathA)) heightsA.Add((item as GH_Number).Value);
                     foreach (var item in interiorsTree.get_Branch(pathA)) interiorsA.Add((item as GH_Boolean).Value);
@@ -152,12 +158,39 @@ namespace Housefly.Program
                 }
 
                 Line line = lines[i];
-                var ( facadePortionLines, setbackVectors, facadePortionHeights ) = this.CreateSetbacks(line, heightsA, heightsB, interiorsA, interiorsB);
+                var (facadePortionLinesA, setbackVectorsA, facadePortionHeightsA, facadePortionLinesB, setbackVectorsB, facadePortionHeightsB) = this.CreateSetbacks(line, heightsA, heightsB, interiorsA, interiorsB);
 
-                GH_Path newPath = new GH_Path(i);
-                facadeSetbackLinesTree.AppendRange(facadePortionLines, newPath);
-                setbackVectorsTree.AppendRange(setbackVectors, newPath);
-                facadeSetbackHeightsTree.AppendRange(facadePortionHeights, newPath);
+                if (i == 0)
+                {
+                    GH_Path newPathB = pathB.AppendElement(0);
+
+                    facadeSetbackLinesTree.AppendRange(facadePortionLinesB, newPathB);
+                    setbackVectorsTree.AppendRange(setbackVectorsB, newPathB);
+                    facadeSetbackHeightsTree.AppendRange(facadePortionHeightsB, newPathB);
+                }
+                else if (i == lines.Count - 1)
+                {
+                    GH_Path newPathA = pathA.AppendElement(1);
+
+                    facadeSetbackLinesTree.AppendRange(facadePortionLinesA, newPathA);
+                    setbackVectorsTree.AppendRange(setbackVectorsA, newPathA);
+                    facadeSetbackHeightsTree.AppendRange(facadePortionHeightsA, newPathA);
+                }
+                else
+                {
+                    GH_Path newPathA = pathA.AppendElement(1);
+
+                    facadeSetbackLinesTree.AppendRange(facadePortionLinesA, newPathA);
+                    setbackVectorsTree.AppendRange(setbackVectorsA, newPathA);
+                    facadeSetbackHeightsTree.AppendRange(facadePortionHeightsA, newPathA);
+
+                    GH_Path newPathB = pathB.AppendElement(0);
+
+                    facadeSetbackLinesTree.AppendRange(facadePortionLinesB, newPathB);
+                    setbackVectorsTree.AppendRange(setbackVectorsB, newPathB);
+                    facadeSetbackHeightsTree.AppendRange(facadePortionHeightsB, newPathB);
+                }
+
             }
 
 
@@ -204,17 +237,13 @@ namespace Housefly.Program
             return cumulativeList;
         }
 
-        private (List<GH_Line> facadePortionLines, List<GH_Vector> setbackVectors, List<GH_Number> facadePortionHeights) CreateSetbacks(
+        private (List<GH_Line> facadePortionLinesA, List<GH_Vector> setbackVectorsA, List<GH_Number> facadePortionHeightsA, List<GH_Line> facadePortionLinesB, List<GH_Vector> setbackVectorsB, List<GH_Number> facadePortionHeightsB) CreateSetbacks(
             Line baseFacadeLine,
             List<double> heightsA,
             List<double> heightsB,
             List<bool> interiorsA,
             List<bool> interiorsB)
         {
-
-            this.AddRuntimeMessage(GH_RuntimeMessageLevel.Remark, "CreateSetbacks running...");
-
-
             // VALIDATION
 
             bool isValid = true;
@@ -241,7 +270,7 @@ namespace Housefly.Program
                 isValid = false;
             }
 
-            if (!isValid) return (new List<GH_Line>(), new List<GH_Vector>(), new List<GH_Number>());
+            if (!isValid) return (new List<GH_Line>(), new List<GH_Vector>(), new List<GH_Number>(), new List<GH_Line>(), new List<GH_Vector>(), new List<GH_Number>());
             
             // LOGIC
 
@@ -278,9 +307,13 @@ namespace Housefly.Program
             perpDir.Unitize();
             Vector3d opositePerpDir = -perpDir;
 
-            List<GH_Line> facadePortionLines = new List<GH_Line>();
-            List<GH_Vector> setbackVectors = new List<GH_Vector>();
-            List<GH_Number> facadePortionHeights = new List<GH_Number>();
+            List<GH_Line> facadePortionLinesA = new List<GH_Line>();
+            List<GH_Vector> setbackVectorsA = new List<GH_Vector>();
+            List<GH_Number> facadePortionHeightsA = new List<GH_Number>();
+
+            List<GH_Line> facadePortionLinesB = new List<GH_Line>();
+            List<GH_Vector> setbackVectorsB = new List<GH_Vector>();
+            List<GH_Number> facadePortionHeightsB = new List<GH_Number>();
 
             for (int i = 0; i < allFloors.Count; i++)
             {
@@ -353,13 +386,23 @@ namespace Housefly.Program
 
                 double facadePortionHeight = currentFloor.AccumulatedHeight - previousCumulatedHeight;
 
-                facadePortionLines.Add(new GH_Line(bottomLine));
-                setbackVectors.Add(new GH_Vector(currentFloor.SetbackVector));
-                facadePortionHeights.Add(new GH_Number(facadePortionHeight));
+                if (currentFloor.ListIdentifier == "A")
+                {
+                    facadePortionLinesA.Add(new GH_Line(bottomLine));
+                    setbackVectorsA.Add(new GH_Vector(currentFloor.SetbackVector));
+                    facadePortionHeightsA.Add(new GH_Number(facadePortionHeight));
+                }
+                else
+                {
+                    facadePortionLinesB.Add(new GH_Line(bottomLine));
+                    setbackVectorsB.Add(new GH_Vector(currentFloor.SetbackVector));
+                    facadePortionHeightsB.Add(new GH_Number(facadePortionHeight));
+                }
+
             }
 
 
-            return ( facadePortionLines, setbackVectors, facadePortionHeights);
+            return ( facadePortionLinesA, setbackVectorsA, facadePortionHeightsA, facadePortionLinesB, setbackVectorsB, facadePortionHeightsB );
         }
         
 
