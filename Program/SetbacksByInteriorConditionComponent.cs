@@ -117,14 +117,6 @@ namespace Housefly.Program
 
                     foreach (var item in heightsFirstBranch) heightsB.Add((item as GH_Number).Value);
                     foreach (var item in interiorsFirstBranch) interiorsB.Add((item as GH_Boolean).Value);
-
-                    List<double> cumulatedHeights = this.CreateCumulativeList(heightsB);
-                    cumulatedHeights.Sort((a, b) => Math.Abs(a).CompareTo(Math.Abs(b)));
-                    double auxHeight = cumulatedHeights[cumulatedHeights.Count - 1]; // get highest absolute value
-
-                    // just one big floor with external spaces to represent outer space
-                    heightsA = new List<double>() { auxHeight };
-                    interiorsA = new List<bool>() { false };
                 }
                 else if (i == lines.Count - 1)
                 {
@@ -135,14 +127,6 @@ namespace Housefly.Program
 
                     foreach (var item in heightsLastBranch) heightsA.Add((item as GH_Number).Value);
                     foreach (var item in interiorsLastBranch) interiorsA.Add((item as GH_Boolean).Value);
-
-                    List<double> cumulatedHeights = this.CreateCumulativeList(heightsA);
-                    cumulatedHeights.Sort((a, b) => Math.Abs(a).CompareTo(Math.Abs(b)));
-                    double auxHeight = cumulatedHeights[cumulatedHeights.Count - 1]; // get highest absolute value
-
-                    // just one big floor with external spaces to represent outer space
-                    heightsB = new List<double>() { auxHeight };
-                    interiorsB = new List<bool>() { false };
                 }
                 else
                 {
@@ -154,7 +138,6 @@ namespace Housefly.Program
 
                     foreach (var item in heightsTree.get_Branch(pathB)) heightsB.Add((item as GH_Number).Value);
                     foreach (var item in interiorsTree.get_Branch(pathB)) interiorsB.Add((item as GH_Boolean).Value);
-
                 }
 
                 Line line = lines[i];
